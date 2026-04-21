@@ -22,9 +22,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 import time
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -93,7 +95,11 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
             return decision
 
     # Defensive shell re-check (flag matrix is primary, this is belt-and-suspenders).
-    if tool in {"bash", "powershell"}:
+    # The generic `shell` tool name is included because `guard_profile.py`
+    # emits `shell(...)` allow rules and Copilot may dispatch the tool under
+    # any of these names — every shell surface must run the same containment
+    # check or whitelisted file cmdlets become an out-of-repo escape hatch.
+    if tool in {"bash", "powershell", "shell"}:
         decision = _check_shell_escape(payload, args)
         if decision is not None:
             return decision
@@ -154,11 +160,23 @@ def _handle_ask_user(payload: dict[str, Any], args: dict[str, Any]) -> dict[str,
 
     cls, answer, source = _classify_and_answer(repo, question)
 
-    if answer is None and cls.get("deterministic") == "ask_human":
+    # Any classification that did not produce a deterministic answer must
+    # escalate to the human — not just the explicit `ask_human` mode. A
+    # `policy_lookup` miss (e.g. a non-allowlisted lint exception) and a
+    # `state_lookup` miss are both legitimate cases where the documented
+    # `policy -> state -> human` contract requires a human in the loop.
+    if answer is None:
         answer = _ask_human(repo, question, cls["name"])
         source = "human" if not answer.startswith("__CANCELLED__") else "cancelled"
         if source == "cancelled":
-            answer = answer.removeprefix("__CANCELLED__ ") or "run aborted by human"
+            # The orchestrator's cancel path does NOT abort the whole run —
+            # it skips the question and lets the agent fall back. Surface
+            # that to the model so it can choose a safe default instead of
+            # being told (incorrectly) that the run was aborted.
+            answer = (
+                answer.removeprefix("__CANCELLED__ ")
+                or "Question cancelled by human; proceed with a safe default."
+            )
 
     # Fallback safety net — should never be reached, but keeps the agent moving.
     if answer is None:
@@ -359,7 +377,7 @@ def _ask_human(repo: Path, question: str, class_name: str) -> str:
         if cancel_path.exists() or global_cancel.exists():
             _try_unlink(req_path)
             _try_unlink(cancel_path)
-            return "__CANCELLED__ run aborted by human"
+            return "__CANCELLED__ Question cancelled by human; proceed with a safe default."
         time.sleep(POLL_INTERVAL_S)
 
 
@@ -385,22 +403,227 @@ def _check_path_containment(payload: dict[str, Any], args: dict[str, Any]) -> di
     return None
 
 
+# Path-like tokens we extract from a shell command line for containment
+# checks. We deliberately do NOT key the check on a tight prefix regex
+# (drive-absolute, `~/`, `/`, `..`) — the previous version of this guard
+# made exactly that mistake and let `Get-Content src/../../etc/passwd`
+# slip through, because the token started with a benign `src/` and the
+# regex never noticed the embedded traversal. Instead we tokenise the
+# command with `shlex`, strip PowerShell parameter prefixes
+# (`-Path:value`, `-Destination=value`), and resolve every argument that
+# contains a path separator, a tilde, or a `..` segment. Resolving with
+# `Path.resolve()` collapses the traversal, so any escape becomes
+# visible to the `relative_to(repo)` containment check below.
+#
+# Tokens that look like URIs (contain `://`) are skipped so flags such
+# as `git log --grep https://example.com/foo` don't trip the guard.
+_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+_SHELL_OPERATORS = frozenset(
+    {"|", "&", "&&", "||", ";", ";;", ">", ">>", "<", "<<", "2>", "2>>", "(", ")"}
+)
+
+# Whitelisted shell entries that take path arguments. When the command's
+# first token is one of these, we cannot rely on the path-separator
+# heuristic to decide which arguments are paths: cmdlets like
+# `Get-Content linked-secret.txt` accept a *bare* relative filename, and
+# that filename may be a repo-local symlink/junction whose target lives
+# outside the tree. For these cmdlets we therefore treat every non-flag,
+# non-operator argument as a path candidate, so `Path.resolve()` (which
+# follows symlinks) gets a chance to flag the escape. Names are matched
+# case-insensitively to mirror PowerShell's own dispatch.
+_FILESYSTEM_CMDLETS = frozenset(
+    {
+        "get-childitem",
+        "get-content",
+        "get-item",
+        "get-itemproperty",
+        "join-path",
+        "new-item",
+        "resolve-path",
+        "select-string",
+        "split-path",
+        "test-path",
+        # Common bash/Unix filesystem commands that accept bare filenames
+        # and follow symlinks. These aren't all in the allowlist today,
+        # but if one is ever added we want the same containment check to
+        # apply automatically.
+        "cat",
+        "head",
+        "tail",
+        "less",
+        "more",
+        "ls",
+        "stat",
+        "file",
+        "readlink",
+        "realpath",
+        "wc",
+        "md5sum",
+        "sha256sum",
+        "touch",
+        "mkdir",
+        "rmdir",
+        "rm",
+        "cp",
+        "mv",
+        "ln",
+    }
+)
+
+
+def _looks_like_path(token: str) -> bool:
+    if not token:
+        return False
+    if _URI_SCHEME_RE.match(token):
+        return False
+    return "/" in token or "\\" in token or token.startswith("~") or token.startswith("..")
+
+
+def _strip_param_prefix(token: str) -> str:
+    """Detach a PowerShell `-Param:value` / `-Param=value` prefix and
+    return the value. Plain flags (`-Path`, `--foo`) yield ``""``."""
+    if not token.startswith("-"):
+        return token
+    # `-Param:value` or `-Param=value` — split on the first `:` or `=`.
+    for sep in (":", "="):
+        idx = token.find(sep)
+        if idx > 0:
+            return token[idx + 1 :]
+    return ""
+
+
+def _iter_shell_path_candidates(cmd: str) -> Iterator[str]:
+    """Yield every token in ``cmd`` that looks like a filesystem path.
+
+    Uses ``shlex.split`` (POSIX-style quoting works for both bash and
+    PowerShell single/double quotes) so quoted paths are recovered
+    intact. Tokens are stripped of surrounding back-ticks/quotes and of
+    PowerShell parameter prefixes before the path heuristic runs.
+
+    When the command starts with a known filesystem cmdlet (see
+    ``_FILESYSTEM_CMDLETS``) the path heuristic is bypassed: every
+    non-flag, non-operator argument is yielded so that bare relative
+    filenames — which may be repo-local symlinks/junctions pointing
+    outside the tree — get resolved and containment-checked.
+    """
+    try:
+        # posix=False keeps Windows backslashes intact (a POSIX split would
+        # treat `C:\Users\x` as `C:Usersx` because `\` is an escape).
+        # Quotes are preserved on the tokens, so we strip them below.
+        tokens = shlex.split(cmd, posix=False)
+    except ValueError:
+        # Unbalanced quotes etc. — fall back to a permissive split so
+        # we still inspect what we can rather than silently allowing.
+        tokens = cmd.split()
+
+    cleaned: list[str] = []
+    for raw in tokens:
+        token = raw.strip().strip("`").strip("'\"").strip("`")
+        if not token or token in _SHELL_OPERATORS:
+            continue
+        cleaned.append(token)
+
+    if not cleaned:
+        return
+
+    first = cleaned[0]
+    # Strip a path prefix so e.g. `/usr/bin/cat` or `C:\bin\Get-Content.exe`
+    # still maps to its basename for the cmdlet-name check.
+    basename = first.replace("\\", "/").rsplit("/", 1)[-1]
+    if basename.lower().endswith(".exe"):
+        basename = basename[:-4]
+    strict = basename.lower() in _FILESYSTEM_CMDLETS
+
+    for token in cleaned[1:]:
+        value = _strip_param_prefix(token).strip("'\"").strip("`")
+        if not value:
+            continue
+        if strict or _looks_like_path(value):
+            yield value
+
+
+# Environment-variable / shell expansions that resolve to user-profile or
+# system locations outside the repo. We can't expand them statically, so we
+# refuse any shell command that references them.
+_OUT_OF_REPO_VAR_RE = re.compile(
+    r"""
+      \$env:(USERPROFILE|HOMEDRIVE|HOMEPATH|HOME|APPDATA|LOCALAPPDATA
+            |PROGRAMFILES|PROGRAMFILES\(X86\)|PROGRAMDATA|SYSTEMROOT|WINDIR
+            |TEMP|TMP|PUBLIC|ALLUSERSPROFILE)
+    | \$HOME(?![A-Za-z0-9_])
+    | %USERPROFILE%
+    | %APPDATA%
+    | %LOCALAPPDATA%
+    | %SYSTEMROOT%
+    | %WINDIR%
+    | %TEMP%
+    | %TMP%
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
 def _check_shell_escape(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any] | None:
+    """Belt-and-suspenders containment check for shell commands.
+
+    The flag matrix in `guard_profile.py` whitelists a number of generic
+    PowerShell cmdlets (`Get-Content`, `New-Item`, `Resolve-Path`, ...) so
+    that the coder can inspect and create files inside the repo. Those
+    cmdlets accept arbitrary path arguments, so without a second check an
+    allowed cmdlet could still read `C:\\Users\\x\\secret.txt` or write
+    `..\\outside.txt`.
+
+    This function tokenises the command, extracts every path-like token
+    (including ordinary relative paths with embedded `..` traversal such
+    as ``src/../../etc/passwd``), resolves it against the repo root, and
+    denies the call if any token escapes the repo. It also denies use of
+    environment variables that expand to known out-of-repo locations
+    (USERPROFILE, APPDATA, ...), because we cannot statically resolve
+    them but they almost always point outside the project tree.
+    """
     cmd = args.get("command") or args.get("cmd") or ""
     if not isinstance(cmd, str) or not cmd:
         return None
-    repo = _repo_root(payload)
-    repo_str = str(repo.resolve())
-    # Heuristic: flag absolute paths that clearly escape repo and aren't just
-    # read-only system tools (we can't reason about /usr/bin/true safely here,
-    # so we stay conservative and only flag writes to clear danger zones).
-    danger_fragments = ("/etc/", r"C:\Windows", r"C:\Program Files", "~/.ssh")
-    for frag in danger_fragments:
-        if frag in cmd and repo_str not in cmd:
+    repo = _repo_root(payload).resolve()
+
+    var_match = _OUT_OF_REPO_VAR_RE.search(cmd)
+    if var_match:
+        return {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                f"[aidor guard] refusing shell command referencing out-of-repo "
+                f"variable {var_match.group(0)!r}: {cmd!r}"
+            ),
+        }
+
+    for token in _iter_shell_path_candidates(cmd):
+        try:
+            if token.startswith("~"):
+                # PowerShell / bash will expand ~ to the user home dir before
+                # the cmdlet sees it; do the same here so containment is
+                # checked against the real target, not the literal "~/...".
+                resolved = Path(os.path.expanduser(token)).resolve()
+            else:
+                candidate = Path(token)
+                resolved = (
+                    candidate.resolve() if candidate.is_absolute() else (repo / candidate).resolve()
+                )
+        except (OSError, ValueError):
             return {
                 "permissionDecision": "deny",
                 "permissionDecisionReason": (
-                    f"[aidor guard] refusing shell command touching {frag!r}: {cmd!r}"
+                    f"[aidor guard] refusing shell command with unresolvable path "
+                    f"{token!r}: {cmd!r}"
+                ),
+            }
+        try:
+            resolved.relative_to(repo)
+        except ValueError:
+            return {
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    f"[aidor guard] refusing shell command touching path outside "
+                    f"the repo ({token!r} -> {resolved}): {cmd!r}"
                 ),
             }
     return None
