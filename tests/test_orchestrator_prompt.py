@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -13,7 +14,7 @@ from aidor.orchestrator import Orchestrator
 
 
 @pytest.fixture
-def orchestrator(tmp_path):
+def orchestrator(tmp_path: Path):
     repo = tmp_path
     (repo / ".aidor" / "pending").mkdir(parents=True)
     cfg = RunConfig(repo=repo, coder_model="m", reviewer_model="m")
@@ -26,7 +27,7 @@ def _write_request(orchestrator: Orchestrator, body: dict) -> str:
     return path
 
 
-def test_prompt_writes_answer_when_user_replies(orchestrator, monkeypatch):
+def test_prompt_writes_answer_when_user_replies(orchestrator, monkeypatch: pytest.MonkeyPatch):
     req = _write_request(
         orchestrator,
         {"question": "Continue?", "role": "coder", "classification": "unknown"},
@@ -42,7 +43,9 @@ def test_prompt_writes_answer_when_user_replies(orchestrator, monkeypatch):
     assert "answered_at" in body
 
 
-def test_prompt_writes_cancel_marker_on_keyboard_interrupt(orchestrator, monkeypatch):
+def test_prompt_writes_cancel_marker_on_keyboard_interrupt(
+    orchestrator, monkeypatch: pytest.MonkeyPatch
+):
     req = _write_request(
         orchestrator,
         {"question": "Continue?", "role": "coder", "classification": "unknown"},

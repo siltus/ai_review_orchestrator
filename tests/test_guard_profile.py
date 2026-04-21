@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from aidor.guard_profile import (
     build_flags,
     detect_local_install_available,
 )
 
 
-def test_build_flags_base(tmp_path):
+def test_build_flags_base(tmp_path: Path):
     flags = build_flags(tmp_path, allow_local_install=False)
     joined = " ".join(flags)
     assert "--deny-tool" in joined
@@ -17,21 +19,21 @@ def test_build_flags_base(tmp_path):
     assert any("git push" in f for f in flags)
 
 
-def test_build_flags_with_local_install_marker(tmp_path):
+def test_build_flags_with_local_install_marker(tmp_path: Path):
     (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
     flags_on = build_flags(tmp_path, allow_local_install=True)
     flags_off = build_flags(tmp_path, allow_local_install=False)
     assert len(flags_on) >= len(flags_off)
 
 
-def test_build_flags_no_marker_no_local_install(tmp_path):
+def test_build_flags_no_marker_no_local_install(tmp_path: Path):
     flags = build_flags(tmp_path, allow_local_install=True)
     joined = " ".join(flags)
     # Without any lockfile marker, npm install etc. must not be in the allow list.
     assert "npm install" not in joined or "--deny-tool" in joined
 
 
-def test_pyproject_alone_is_not_a_lockfile_marker(tmp_path):
+def test_pyproject_alone_is_not_a_lockfile_marker(tmp_path: Path):
     """A bare pyproject.toml does NOT pin transitive deps, so it must not
     enable the local-install allowlist on its own."""
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
@@ -41,7 +43,7 @@ def test_pyproject_alone_is_not_a_lockfile_marker(tmp_path):
     assert "shell(pip install -e)" not in joined
 
 
-def test_pip_install_user_is_not_in_local_allowlist(tmp_path):
+def test_pip_install_user_is_not_in_local_allowlist(tmp_path: Path):
     """`pip install --user` writes outside the repo and must never be allowed."""
     (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=True)
@@ -52,7 +54,7 @@ def test_pip_install_user_is_not_in_local_allowlist(tmp_path):
     assert "pip install --user" not in allow_joined
 
 
-def test_shell_rules_are_aliased_to_bash_and_powershell(tmp_path):
+def test_shell_rules_are_aliased_to_bash_and_powershell(tmp_path: Path):
     """Every shell(...) rule must also be expressed as bash(...) and
     powershell(...) so the Guard matrix matches whichever underlying tool
     name Copilot uses on this platform."""
@@ -86,7 +88,7 @@ def _deny_shadows(rule: str, deny: list[str]) -> bool:
     return False
 
 
-def test_python_local_install_does_not_shadow_pip_install_editable(tmp_path):
+def test_python_local_install_does_not_shadow_pip_install_editable(tmp_path: Path):
     """Regression (review-0014): with --allow-local-install on for a
     Python repo with a real lockfile, the broad `shell(pip install)` deny
     must NOT be emitted, because deny rules take precedence and would
@@ -113,7 +115,7 @@ def test_python_local_install_does_not_shadow_pip_install_editable(tmp_path):
     )
 
 
-def test_python_local_install_off_keeps_broad_pip_install_deny(tmp_path):
+def test_python_local_install_off_keeps_broad_pip_install_deny(tmp_path: Path):
     """Without --allow-local-install, the broad `pip install` deny must
     still be in effect (defence in depth for repos that don't opt in)."""
     (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
@@ -123,7 +125,7 @@ def test_python_local_install_off_keeps_broad_pip_install_deny(tmp_path):
     assert "shell(pip3 install)" in deny
 
 
-def test_local_install_for_non_python_repo_still_uses_broad_pip_deny(tmp_path):
+def test_local_install_for_non_python_repo_still_uses_broad_pip_deny(tmp_path: Path):
     """A JS-only repo opting into --allow-local-install must NOT relax the
     Python pip-install deny — only Python repos get the narrow form."""
     (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
@@ -133,7 +135,7 @@ def test_local_install_for_non_python_repo_still_uses_broad_pip_deny(tmp_path):
     assert "shell(pip install --user)" not in deny
 
 
-def test_pipx_install_remains_denied_under_python_local_install(tmp_path):
+def test_pipx_install_remains_denied_under_python_local_install(tmp_path: Path):
     """pipx writes outside the repo regardless of any lockfile gate, so it
     must remain denied even when --allow-local-install relaxes the
     `pip install` deny for a Python repo."""
@@ -146,7 +148,7 @@ def test_pipx_install_remains_denied_under_python_local_install(tmp_path):
 # ---- Ecosystem-scoped local-install allow (review-0015) ------------------
 
 
-def test_js_lockfile_does_not_unlock_python_install_commands(tmp_path):
+def test_js_lockfile_does_not_unlock_python_install_commands(tmp_path: Path):
     """Regression (review-0015): a repo with only `package-lock.json` must
     NOT enable Python install commands like `uv pip install` or
     `poetry install`. Each ecosystem's allow set is gated on its own
@@ -164,7 +166,7 @@ def test_js_lockfile_does_not_unlock_python_install_commands(tmp_path):
     assert "shell(pip install -e)" not in allow
 
 
-def test_python_lockfile_does_not_unlock_js_install_commands(tmp_path):
+def test_python_lockfile_does_not_unlock_js_install_commands(tmp_path: Path):
     """The reverse: a Python-only repo must not unlock `npm`/`pnpm`/`yarn`."""
     (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=True)
@@ -177,7 +179,7 @@ def test_python_lockfile_does_not_unlock_js_install_commands(tmp_path):
     assert "shell(yarn install)" not in allow
 
 
-def test_requirements_txt_alone_is_not_a_lockfile_marker(tmp_path):
+def test_requirements_txt_alone_is_not_a_lockfile_marker(tmp_path: Path):
     """Regression (review-0015): a bare `requirements.txt` is not a real
     lockfile (no hashes, no pinned transitive graph). The docs frame
     `--allow-local-install` around real lockfiles, so `requirements.txt`
@@ -193,7 +195,7 @@ def test_requirements_txt_alone_is_not_a_lockfile_marker(tmp_path):
     assert "shell(pip install)" in deny
 
 
-def test_rust_lockfile_only_unlocks_cargo(tmp_path):
+def test_rust_lockfile_only_unlocks_cargo(tmp_path: Path):
     """A Rust repo with `Cargo.lock` unlocks cargo commands only."""
     (tmp_path / "Cargo.lock").write_text("", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=True)
@@ -205,7 +207,7 @@ def test_rust_lockfile_only_unlocks_cargo(tmp_path):
     assert "shell(go mod download)" not in allow
 
 
-def test_polyglot_repo_unlocks_only_present_ecosystems(tmp_path):
+def test_polyglot_repo_unlocks_only_present_ecosystems(tmp_path: Path):
     """A repo with both Python and JS lockfiles unlocks both — but
     nothing else (Rust/Go/pixi remain denied)."""
     (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
@@ -222,7 +224,7 @@ def test_polyglot_repo_unlocks_only_present_ecosystems(tmp_path):
 # ---- Quality-gate validation commands (review-0017) ---------------------
 
 
-def test_quality_gate_commands_are_allowed(tmp_path):
+def test_quality_gate_commands_are_allowed(tmp_path: Path):
     """Regression (review-0017): the allowlist must permit the repo's
     own mandatory validation commands (ruff, pip-audit, pytest,
     pre-commit) so the launched coder can actually run the quality
@@ -265,7 +267,7 @@ def test_quality_gate_commands_are_allowed(tmp_path):
         assert f"powershell({inner})" in allow
 
 
-def test_unrelated_shell_commands_remain_denied(tmp_path):
+def test_unrelated_shell_commands_remain_denied(tmp_path: Path):
     """Whitelisting the quality gates must NOT reopen arbitrary shell
     access — unrelated commands like `curl` and `npm install -g` must
     still be denied."""
@@ -300,7 +302,7 @@ def test_unrelated_shell_commands_remain_denied(tmp_path):
 # ---- Extended ecosystem allowlist (Node / .NET / Android) --------------
 
 
-def test_node_toolchain_allowed(tmp_path):
+def test_node_toolchain_allowed(tmp_path: Path):
     """Node / TypeScript coders must be able to invoke the bare
     toolchain without tripping the Guard. Global-install forms stay
     denied."""
@@ -329,7 +331,7 @@ def test_node_toolchain_allowed(tmp_path):
         assert rule in deny, f"expected deny for {rule}"
 
 
-def test_dotnet_toolchain_allowed(tmp_path):
+def test_dotnet_toolchain_allowed(tmp_path: Path):
     """.NET / C# coders must be able to invoke `dotnet`, `msbuild`,
     `nuget`. Global-tool installs stay denied."""
     flags = build_flags(tmp_path, allow_local_install=False)
@@ -344,7 +346,7 @@ def test_dotnet_toolchain_allowed(tmp_path):
         assert rule in deny, f"expected deny for {rule}"
 
 
-def test_android_toolchain_allowed(tmp_path):
+def test_android_toolchain_allowed(tmp_path: Path):
     """Android / Gradle coders must be able to invoke Gradle wrappers,
     Maven, `adb`, and the JDK. SDK-install commands stay denied."""
     flags = build_flags(tmp_path, allow_local_install=False)

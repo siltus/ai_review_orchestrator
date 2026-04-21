@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from aidor.telemetry import PhaseMetrics, parse_otel_file
 
 
-def test_missing_file_returns_zero_metrics(tmp_path):
+def test_missing_file_returns_zero_metrics(tmp_path: Path):
     m = parse_otel_file(tmp_path / "nope.jsonl")
     assert m == PhaseMetrics()
 
 
-def test_malformed_lines_are_skipped(tmp_path):
+def test_malformed_lines_are_skipped(tmp_path: Path):
     p = tmp_path / "bad.jsonl"
     p.write_text("not json\n{also not}\n", encoding="utf-8")
     m = parse_otel_file(p)
@@ -20,7 +21,7 @@ def test_malformed_lines_are_skipped(tmp_path):
     assert m.tokens_out == 0
 
 
-def test_invoke_agent_span_supplies_canonical_token_counts(tmp_path):
+def test_invoke_agent_span_supplies_canonical_token_counts(tmp_path: Path):
     p = tmp_path / "otel.jsonl"
     records = [
         {
@@ -52,7 +53,7 @@ def test_invoke_agent_span_supplies_canonical_token_counts(tmp_path):
     assert m.tool_calls == 2
 
 
-def test_chat_only_falls_back_when_no_invoke_agent(tmp_path):
+def test_chat_only_falls_back_when_no_invoke_agent(tmp_path: Path):
     """When there is no invoke_agent span, per-phase totals are the sum
     across all chat spans (each chat span describes one turn). Regression
     for review-0009: previously only the first chat span's tokens were

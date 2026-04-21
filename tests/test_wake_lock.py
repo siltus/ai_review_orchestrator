@@ -18,7 +18,7 @@ def test_wake_lock_disabled_is_a_noop():
     assert lock._linux_proc is None
 
 
-def test_wake_lock_unsupported_platform_does_not_raise(monkeypatch):
+def test_wake_lock_unsupported_platform_does_not_raise(monkeypatch: pytest.MonkeyPatch):
     """On a fictitious platform the context manager must still be safe."""
     monkeypatch.setattr(sys, "platform", "haiku")
     with WakeLock(enabled=True) as lock:

@@ -19,7 +19,7 @@ CLEAN_REVIEW = """\
 
 
 @pytest.mark.timeout(60)
-def test_converges_in_one_round(run_config, monkeypatch):
+def test_converges_in_one_round(run_config, monkeypatch: pytest.MonkeyPatch):
     """Fake copilot emits a CLEAN + production-ready review on first try;
     the readiness gate then also passes → status converged."""
     # Tell the fake copilot to always write a clean review to the artefact
@@ -80,7 +80,7 @@ def test_write_abort_marker_is_idempotent(tmp_path: Path):
 
 
 def test_cli_run_writes_abort_marker_on_keyboard_interrupt(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Regression (review-0002): on Windows, `Ctrl-C` propagates as
     `KeyboardInterrupt` out of `asyncio.run` rather than hitting the POSIX
@@ -127,7 +127,9 @@ def test_cli_run_writes_abort_marker_on_keyboard_interrupt(
 # ---- phase-status mapping ------------------------------------------------
 
 
-def test_phase_status_aborted_is_reported_as_aborted(run_config, tmp_path, monkeypatch):
+def test_phase_status_aborted_is_reported_as_aborted(
+    run_config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Regression (review-0002): phases that ended with stop_reason=='aborted'
     must report phase.status=='aborted', not 'failed', so state.json and the
     summary reflect an operator abort correctly.
@@ -156,9 +158,7 @@ def test_phase_status_aborted_is_reported_as_aborted(run_config, tmp_path, monke
     assert orch.state.status == "aborted"
     rnd = orch.state.rounds[0]
     review_phase = next(p for p in rnd.phases if p.name == "review")
-    assert review_phase.status == "aborted", (
-        f"expected aborted, got {review_phase.status!r}"
-    )
+    assert review_phase.status == "aborted", f"expected aborted, got {review_phase.status!r}"
     assert review_phase.stop_reason == "aborted"
 
 
@@ -180,7 +180,7 @@ GATE_FOUND_ISSUES_FOOTER = (
 )
 
 
-def _patch_phase_runner(monkeypatch, content_for):
+def _patch_phase_runner(monkeypatch: pytest.MonkeyPatch, content_for):
     """Patch PhaseRunner.run to write `content_for(self.artifact_path)` to
     the artifact path and return a successful PhaseResult."""
     from aidor import phase as phase_mod
@@ -206,7 +206,7 @@ def _patch_phase_runner(monkeypatch, content_for):
 
 
 def test_readiness_gate_found_issues_routes_fix_to_gate_review(
-    run_config, monkeypatch
+    run_config, monkeypatch: pytest.MonkeyPatch
 ):
     """Regression (review-0003): when the readiness gate finds NEW issues
     after a clean review, the coder's fix prompt must reference the gate's
@@ -270,7 +270,7 @@ def test_readiness_gate_found_issues_routes_fix_to_gate_review(
     )
 
 
-def test_resume_after_gate_routes_fix_to_gate_review(run_config, monkeypatch):
+def test_resume_after_gate_routes_fix_to_gate_review(run_config, monkeypatch: pytest.MonkeyPatch):
     """Regression (review-0003): on `--resume` after the readiness gate has
     already produced an ISSUES_FOUND review (but the fix phase had not yet
     started), the orchestrator must use the GATE's review path for the fix
@@ -332,8 +332,7 @@ def test_resume_after_gate_routes_fix_to_gate_review(run_config, monkeypatch):
     assert len(captured_fix_prompts) == 1
     fix_prompt = captured_fix_prompts[0]
     assert str(gate_path) in fix_prompt, (
-        f"on resume, fix prompt must reference gate review {gate_path}; "
-        f"prompt was:\n{fix_prompt}"
+        f"on resume, fix prompt must reference gate review {gate_path}; prompt was:\n{fix_prompt}"
     )
     assert str(review_path) not in fix_prompt, (
         "on resume, fix prompt must NOT reference the original clean review"
@@ -372,9 +371,7 @@ def test_followup_review_prompt_references_gate_review(run_config):
     )
     orch.state.rounds.append(rnd1)
 
-    prompt = orch._review_prompt(
-        round_index=2, review_path=Path("/tmp/reviews/review-0003-new.md")
-    )
+    prompt = orch._review_prompt(round_index=2, review_path=Path("/tmp/reviews/review-0003-new.md"))
     assert "/tmp/reviews/review-0002-gate.md" in prompt
     assert "/tmp/reviews/review-0001-x.md" not in prompt
     assert "/tmp/fixes/fixes-0001-x.md" in prompt
@@ -390,7 +387,7 @@ GATE_INVALID_FOOTER = (
 )
 
 
-def test_readiness_gate_invalid_footer_fails_round(run_config, monkeypatch):
+def test_readiness_gate_invalid_footer_fails_round(run_config, monkeypatch: pytest.MonkeyPatch):
     """Regression (review-0004): when the readiness-gate artefact exists
     but its AIDOR footer is malformed/missing, the orchestrator must NOT
     silently fall back to the (now-stale) original clean review and ask the
@@ -408,9 +405,7 @@ def test_readiness_gate_invalid_footer_fails_round(run_config, monkeypatch):
             state["review_calls"] += 1
             return CLEAN_AND_READY_FOOTER
         # Should never reach the coder for a failed round.
-        raise AssertionError(
-            "fix phase must not run when the readiness-gate footer is invalid"
-        )
+        raise AssertionError("fix phase must not run when the readiness-gate footer is invalid")
 
     _patch_phase_runner(monkeypatch, content_for)
 
@@ -433,7 +428,7 @@ def test_readiness_gate_invalid_footer_fails_round(run_config, monkeypatch):
     assert gate_phase.status == "failed"
 
 
-def test_resume_with_invalid_gate_footer_fails_round(run_config, monkeypatch):
+def test_resume_with_invalid_gate_footer_fails_round(run_config, monkeypatch: pytest.MonkeyPatch):
     """Regression (review-0004): on `--resume` after a previous process
     completed the readiness-gate phase but the gate artefact has a malformed
     footer, the orchestrator must again refuse to route the coder at the
@@ -476,9 +471,7 @@ def test_resume_with_invalid_gate_footer_fails_round(run_config, monkeypatch):
 
     def content_for(runner):
         if runner.role == "coder":
-            raise AssertionError(
-                "fix phase must not run when the gate footer is invalid on resume"
-            )
+            raise AssertionError("fix phase must not run when the gate footer is invalid on resume")
         # No reviewer phases should run in this resume path either, but be
         # defensive: emit a clean review if asked.
         return CLEAN_AND_READY_FOOTER
@@ -497,7 +490,9 @@ def test_resume_with_invalid_gate_footer_fails_round(run_config, monkeypatch):
 # ---- Resume must not skip an unfinished round (review-0007) ---------------
 
 
-def test_resume_after_crash_mid_round_completes_same_round(run_config, monkeypatch):
+def test_resume_after_crash_mid_round_completes_same_round(
+    run_config, monkeypatch: pytest.MonkeyPatch
+):
     """Regression (review-0007): `State.start_round()` persists
     `current_round` as soon as a round begins. If the process dies after the
     review/readiness-gate phases ran but before the fix phase started, a
@@ -573,7 +568,9 @@ BAD_COUNT_REVIEW = (
 )
 
 
-def test_review_with_non_integer_count_fails_round_cleanly(run_config, monkeypatch):
+def test_review_with_non_integer_count_fails_round_cleanly(
+    run_config, monkeypatch: pytest.MonkeyPatch
+):
     """Regression (review-0007): a syntactically valid AIDOR:ISSUES JSON
     payload with a non-integer count (e.g. `"major":"one"`) must surface as
     a `FooterParseError` and cause the orchestrator to fail the round
@@ -606,7 +603,7 @@ def test_review_with_non_integer_count_fails_round_cleanly(run_config, monkeypat
 
 
 def test_resume_with_done_review_phase_missing_artifact_path_fails_round(
-    run_config, monkeypatch
+    run_config, monkeypatch: pytest.MonkeyPatch
 ):
     """Regression (review-0008): on `--resume`, if a persisted `done` review
     phase is missing its `artifact_path` (stale/manual state file or future
@@ -663,7 +660,7 @@ def test_resume_with_done_review_phase_missing_artifact_path_fails_round(
 
 
 def test_resume_rejects_out_of_repo_review_artifact_path(
-    run_config, tmp_path_factory, monkeypatch
+    run_config, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ):
     """Regression (review-0013): a hand-edited `state.json` that pins a
     persisted review `artifact_path` to a file OUTSIDE the repo root must
@@ -699,9 +696,7 @@ def test_resume_rejects_out_of_repo_review_artifact_path(
     run_config.resume = True
 
     def content_for(runner):
-        raise AssertionError(
-            "no phase must run when persisted artifact_path is outside the repo"
-        )
+        raise AssertionError("no phase must run when persisted artifact_path is outside the repo")
 
     _patch_phase_runner(monkeypatch, content_for)
 
@@ -712,7 +707,7 @@ def test_resume_rejects_out_of_repo_review_artifact_path(
 
 
 def test_resume_rejects_out_of_repo_gate_artifact_path(
-    run_config, tmp_path_factory, monkeypatch
+    run_config, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ):
     """Regression (review-0013): same containment requirement for the
     readiness-gate phase's persisted artifact_path."""
@@ -771,7 +766,7 @@ def test_resume_rejects_out_of_repo_gate_artifact_path(
 # ---- Fix-phase contract enforcement (review-0013) -------------------------
 
 
-def test_fix_phase_failed_stop_reason_fails_round(run_config, monkeypatch):
+def test_fix_phase_failed_stop_reason_fails_round(run_config, monkeypatch: pytest.MonkeyPatch):
     """Regression (review-0013): if the coder turn ends with anything other
     than `end_turn` (e.g. idle, timeout, error → status="failed"), the
     orchestrator must NOT silently advance to the next round. It must fail
@@ -826,7 +821,7 @@ def test_fix_phase_failed_stop_reason_fails_round(run_config, monkeypatch):
     assert any("fix phase did not complete cleanly" in n for n in orch.state.notes)
 
 
-def test_fix_phase_summaryless_end_turn_fails_round(run_config, monkeypatch):
+def test_fix_phase_summaryless_end_turn_fails_round(run_config, monkeypatch: pytest.MonkeyPatch):
     """Regression (review-0013): if the coder ends its turn with end_turn
     but never writes the fixes-NNNN-*.md artefact, the orchestrator must
     not advance to a follow-up review that references a missing file."""
@@ -875,7 +870,7 @@ def test_fix_phase_summaryless_end_turn_fails_round(run_config, monkeypatch):
 
 
 def test_resume_with_done_fix_phase_missing_artefact_fails_round(
-    run_config, monkeypatch
+    run_config, monkeypatch: pytest.MonkeyPatch
 ):
     """Regression (review-0013): on `--resume`, a persisted `done` fix
     phase whose artefact file no longer exists must fail the round
@@ -919,9 +914,7 @@ def test_resume_with_done_fix_phase_missing_artefact_fails_round(
     run_config.resume = True
 
     def content_for(runner):
-        raise AssertionError(
-            "no phase must run when persisted done fix phase has no artefact"
-        )
+        raise AssertionError("no phase must run when persisted done fix phase has no artefact")
 
     _patch_phase_runner(monkeypatch, content_for)
 
@@ -943,7 +936,7 @@ def test_resume_with_done_fix_phase_missing_artefact_fails_round(
 
 
 def test_review_phase_end_turn_without_file_marks_phase_failed(
-    run_config, monkeypatch
+    run_config, monkeypatch: pytest.MonkeyPatch
 ):
     """Regression (review-0014): if the reviewer ends its turn cleanly
     (`stop_reason="end_turn"`) but never wrote the review artefact, the

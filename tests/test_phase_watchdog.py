@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 import pytest
 
@@ -37,7 +38,7 @@ def test_round_timeout_excludes_paused_seconds():
     assert effective(75.0, 0.0) == 75.0
 
 
-def test_phase_runner_aborts_on_abort_marker(run_config, tmp_path):
+def test_phase_runner_aborts_on_abort_marker(run_config, tmp_path: Path):
     """Integration: writing `.aidor/ABORT` while a phase runs must cause
     the watchdog to terminate the subprocess with stop_reason="aborted".
 
@@ -75,9 +76,7 @@ def test_phase_runner_aborts_on_abort_marker(run_config, tmp_path):
                     await abort_task
                 except (asyncio.CancelledError, Exception):
                     pass
-            assert result.stop_reason == "aborted", (
-                f"expected abort, got {result.stop_reason!r}"
-            )
+            assert result.stop_reason == "aborted", f"expected abort, got {result.stop_reason!r}"
 
         asyncio.run(_drive())
     finally:
@@ -92,7 +91,7 @@ def test_phase_runner_aborts_on_abort_marker(run_config, tmp_path):
     ],
 )
 def test_phase_runner_round_timeout_pause_is_effective(
-    run_config, tmp_path, simulate_pause, expected_timeout
+    run_config, tmp_path: Path, simulate_pause, expected_timeout
 ):
     """Integration: verify the pause-aware round-timeout math in the real
     PhaseRunner by simulating pause -> resume -> continued runtime before
@@ -158,9 +157,7 @@ def test_phase_runner_round_timeout_pause_is_effective(
 
         result = asyncio.run(_drive())
         if expected_timeout:
-            assert result.stop_reason == "timeout", (
-                f"expected timeout, got {result.stop_reason!r}"
-            )
+            assert result.stop_reason == "timeout", f"expected timeout, got {result.stop_reason!r}"
         else:
             assert result.stop_reason != "timeout", (
                 "watchdog tripped round_timeout despite the pause accounting "

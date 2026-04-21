@@ -61,9 +61,9 @@ def test_footer_missing_raises():
 # ---- Strict end-of-file footer enforcement (review-0003) ------------------
 
 VALID_FOOTER_LINES = (
-    '<!-- AIDOR:STATUS=CLEAN -->\n'
+    "<!-- AIDOR:STATUS=CLEAN -->\n"
     '<!-- AIDOR:ISSUES={"critical":0,"major":0,"minor":0,"nit":0} -->\n'
-    '<!-- AIDOR:PRODUCTION_READY=true -->\n'
+    "<!-- AIDOR:PRODUCTION_READY=true -->\n"
 )
 
 
@@ -76,9 +76,8 @@ def test_footer_with_example_in_suggested_fixes_section_is_rejected():
         "## Suggested fixes\n\n"
         "Reviewers should append:\n\n"
         "    <!-- AIDOR:STATUS=ISSUES_FOUND -->\n"
-        "    <!-- AIDOR:ISSUES={\"critical\":1,\"major\":0,\"minor\":0,\"nit\":0} -->\n"
-        "    <!-- AIDOR:PRODUCTION_READY=false -->\n\n"
-        + VALID_FOOTER_LINES
+        '    <!-- AIDOR:ISSUES={"critical":1,"major":0,"minor":0,"nit":0} -->\n'
+        "    <!-- AIDOR:PRODUCTION_READY=false -->\n\n" + VALID_FOOTER_LINES
     )
     with pytest.raises(FooterParseError):
         parse_footer(body)
@@ -117,8 +116,8 @@ def test_footer_out_of_order_is_rejected():
     body = (
         "# Review\n\n"
         '<!-- AIDOR:ISSUES={"critical":0,"major":0,"minor":0,"nit":0} -->\n'
-        '<!-- AIDOR:STATUS=CLEAN -->\n'
-        '<!-- AIDOR:PRODUCTION_READY=true -->\n'
+        "<!-- AIDOR:STATUS=CLEAN -->\n"
+        "<!-- AIDOR:PRODUCTION_READY=true -->\n"
     )
     with pytest.raises(FooterParseError):
         parse_footer(body)
@@ -250,4 +249,3 @@ def test_footer_rejects_production_ready_when_critical_nonzero():
     # are correct rejections — we just require it to raise.
     with pytest.raises(FooterParseError):
         parse_footer(body)
-

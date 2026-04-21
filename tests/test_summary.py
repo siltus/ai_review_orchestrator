@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import StringIO
+from pathlib import Path
 
 from rich.console import Console
 
@@ -72,7 +73,7 @@ def test_print_summary_writes_to_console():
     assert "converged" in out
 
 
-def test_write_summary_md_renders_markdown_table(tmp_path):
+def test_write_summary_md_renders_markdown_table(tmp_path: Path):
     state = _state_with_one_round()
     out = tmp_path / "summary.md"
     write_summary_md(state, out)
@@ -157,7 +158,7 @@ def test_phase_returns_latest_reviewer_for_readiness_gate_round():
     assert reviewer.duration_s == 200.0
 
 
-def test_summary_md_reflects_readiness_gate_phase(tmp_path):
+def test_summary_md_reflects_readiness_gate_phase(tmp_path: Path):
     state = _state_with_readiness_gate_round()
     out = tmp_path / "summary.md"
     write_summary_md(state, out)

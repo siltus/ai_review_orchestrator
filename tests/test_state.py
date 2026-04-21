@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from aidor.state import PhaseRecord, RestartRecord, State
 
 
-def test_round_trip(tmp_path):
+def test_round_trip(tmp_path: Path):
     s = State(started_at="2024-01-01T00:00:00Z", status="running")
     r = s.start_round()
     r.phases.append(
@@ -31,7 +33,7 @@ def test_round_trip(tmp_path):
     assert loaded.rounds[0].footer == r.footer
 
 
-def test_save_is_atomic(tmp_path):
+def test_save_is_atomic(tmp_path: Path):
     """Simulate a crash mid-save: the existing file should not be truncated."""
     path = tmp_path / "state.json"
     s1 = State(status="running")
@@ -48,7 +50,7 @@ def test_save_is_atomic(tmp_path):
     )
 
 
-def test_load_rejects_non_object_top_level(tmp_path):
+def test_load_rejects_non_object_top_level(tmp_path: Path):
     """Regression (review-0008): `State.load` must validate the on-disk
     schema rather than blindly trust a hand-edited / corrupted state.json.
     A non-object top-level payload must raise a clear `ValueError`, not an
@@ -61,7 +63,7 @@ def test_load_rejects_non_object_top_level(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_malformed_round_entries(tmp_path):
+def test_load_rejects_malformed_round_entries(tmp_path: Path):
     """Regression (review-0008): a round entry that is not an object (or
     lacks `index`) must raise a clear `ValueError` instead of a `KeyError`
     on `r["index"]`."""
@@ -73,7 +75,7 @@ def test_load_rejects_malformed_round_entries(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_malformed_phases_list(tmp_path):
+def test_load_rejects_malformed_phases_list(tmp_path: Path):
     """Regression (review-0009): nested `phases` must be validated, not
     blindly trusted. A non-list `phases` must surface as a clear
     ValueError rather than an `AttributeError` on `.get`."""
@@ -88,7 +90,7 @@ def test_load_rejects_malformed_phases_list(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_non_object_phase_entry(tmp_path):
+def test_load_rejects_non_object_phase_entry(tmp_path: Path):
     """Regression (review-0009): each phase entry must be a dict; a bare
     string here used to crash with a TypeError inside ``PhaseRecord(**p)``."""
     import pytest
@@ -102,7 +104,7 @@ def test_load_rejects_non_object_phase_entry(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_malformed_restart_entries(tmp_path):
+def test_load_rejects_malformed_restart_entries(tmp_path: Path):
     """Regression (review-0009): nested `restarts` must be validated.
     A non-dict restart entry used to surface as `TypeError` deep in
     deserialisation."""
@@ -119,7 +121,7 @@ def test_load_rejects_malformed_restart_entries(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_non_json(tmp_path):
+def test_load_rejects_non_json(tmp_path: Path):
     """Regression (review-0009): a corrupted state.json (not valid JSON)
     must raise a clear ValueError so the CLI can render a friendly error
     instead of a JSONDecodeError traceback."""
@@ -131,7 +133,7 @@ def test_load_rejects_non_json(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_non_string_artifact_path(tmp_path):
+def test_load_rejects_non_string_artifact_path(tmp_path: Path):
     """Regression (review-0012): a persisted phase whose ``artifact_path``
     is not a string must be rejected at load time. Otherwise the resume
     path crashes with a raw ``TypeError`` from ``Path(123)`` deep in the
@@ -150,7 +152,7 @@ def test_load_rejects_non_string_artifact_path(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_list_artifact_path(tmp_path):
+def test_load_rejects_list_artifact_path(tmp_path: Path):
     """Regression (review-0012): a persisted phase whose ``artifact_path``
     is a list must be rejected at load time."""
     import pytest
@@ -167,7 +169,7 @@ def test_load_rejects_list_artifact_path(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_bool_artifact_path(tmp_path):
+def test_load_rejects_bool_artifact_path(tmp_path: Path):
     """Regression (review-0012): a persisted phase whose ``artifact_path``
     is a JSON boolean must be rejected at load time. Booleans are an
     ``int`` subclass in Python — explicitly excluding them prevents a
@@ -186,7 +188,7 @@ def test_load_rejects_bool_artifact_path(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_non_string_transcript_path(tmp_path):
+def test_load_rejects_non_string_transcript_path(tmp_path: Path):
     """Regression (review-0012): scalar fields like ``transcript_path``
     must be type-checked at load time, not blindly trusted."""
     import pytest
@@ -203,7 +205,7 @@ def test_load_rejects_non_string_transcript_path(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_non_string_status(tmp_path):
+def test_load_rejects_non_string_status(tmp_path: Path):
     """Regression (review-0012): a persisted phase ``status`` of the
     wrong type must be rejected, not propagated into orchestrator
     branches that compare it to known string values."""
@@ -220,7 +222,7 @@ def test_load_rejects_non_string_status(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_unknown_status_enum(tmp_path):
+def test_load_rejects_unknown_status_enum(tmp_path: Path):
     """Regression (review-0012): an out-of-vocabulary phase ``status``
     string (e.g. typo) must be rejected at load time."""
     import pytest
@@ -236,7 +238,7 @@ def test_load_rejects_unknown_status_enum(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_non_int_tokens(tmp_path):
+def test_load_rejects_non_int_tokens(tmp_path: Path):
     """Regression (review-0012): numeric fields persisted as strings
     must be rejected so cost/token aggregation cannot blow up later."""
     import pytest
@@ -253,7 +255,7 @@ def test_load_rejects_non_int_tokens(tmp_path):
         State.load(path)
 
 
-def test_load_rejects_non_string_stop_reason(tmp_path):
+def test_load_rejects_non_string_stop_reason(tmp_path: Path):
     """Regression (review-0012): readiness-gate resume reads
     ``stop_reason`` as a string; a wrong-type persisted value must
     fail at load time."""

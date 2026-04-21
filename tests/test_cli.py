@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from aidor.cli import app
@@ -66,9 +67,7 @@ def test_status_errors_without_state_json(tmp_path: Path):
 def test_status_prints_current_state(tmp_path: Path):
     aidor_dir = tmp_path / ".aidor"
     aidor_dir.mkdir()
-    State(status="running", started_at="2026-04-21T09:00:00Z").save(
-        aidor_dir / "state.json"
-    )
+    State(status="running", started_at="2026-04-21T09:00:00Z").save(aidor_dir / "state.json")
     result = runner.invoke(app, ["status", "--repo", str(tmp_path)])
     assert result.exit_code == 0, result.stdout
     assert "running" in result.stdout
@@ -166,9 +165,7 @@ def test_status_handles_corrupt_current_round_cleanly(tmp_path: Path):
     """Regression (review-0010): a malformed top-level `current_round`
     (string instead of int) must be rejected by State.load with a clean
     operator-facing error, not leak through to a TypeError on resume."""
-    _write_corrupt_state(
-        tmp_path, '{"current_round": "1", "rounds": [], "notes": []}'
-    )
+    _write_corrupt_state(tmp_path, '{"current_round": "1", "rounds": [], "notes": []}')
     result = runner.invoke(app, ["status", "--repo", str(tmp_path)])
     assert result.exit_code == 2, result.stdout
     assert "could not load" in result.stdout
@@ -176,27 +173,21 @@ def test_status_handles_corrupt_current_round_cleanly(tmp_path: Path):
 
 
 def test_status_handles_corrupt_status_field_cleanly(tmp_path: Path):
-    _write_corrupt_state(
-        tmp_path, '{"status": "wat", "rounds": [], "notes": []}'
-    )
+    _write_corrupt_state(tmp_path, '{"status": "wat", "rounds": [], "notes": []}')
     result = runner.invoke(app, ["status", "--repo", str(tmp_path)])
     assert result.exit_code == 2, result.stdout
     assert "could not load" in result.stdout
 
 
 def test_status_handles_corrupt_notes_element_cleanly(tmp_path: Path):
-    _write_corrupt_state(
-        tmp_path, '{"rounds": [], "notes": [123]}'
-    )
+    _write_corrupt_state(tmp_path, '{"rounds": [], "notes": [123]}')
     result = runner.invoke(app, ["status", "--repo", str(tmp_path)])
     assert result.exit_code == 2, result.stdout
     assert "could not load" in result.stdout
 
 
 def test_status_handles_null_current_round_cleanly(tmp_path: Path):
-    _write_corrupt_state(
-        tmp_path, '{"current_round": null, "rounds": [], "notes": []}'
-    )
+    _write_corrupt_state(tmp_path, '{"current_round": null, "rounds": [], "notes": []}')
     result = runner.invoke(app, ["status", "--repo", str(tmp_path)])
     assert result.exit_code == 2, result.stdout
 
@@ -204,7 +195,7 @@ def test_status_handles_null_current_round_cleanly(tmp_path: Path):
 # ---- doctor (review-0010) ------------------------------------------------
 
 
-def test_doctor_runs_and_reports(tmp_path: Path, monkeypatch):
+def test_doctor_runs_and_reports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Regression (review-0010): `aidor doctor` must execute end-to-end and
     report Python/copilot/repo checks. Uses a guaranteed-missing copilot
     binary so the command exits with code 2 (FAIL) but still prints all
@@ -225,7 +216,7 @@ def test_doctor_runs_and_reports(tmp_path: Path, monkeypatch):
     assert "repo is a directory" in result.stdout
 
 
-def test_doctor_macos_caffeinate_branch(tmp_path: Path, monkeypatch):
+def test_doctor_macos_caffeinate_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Regression (review-0010): the macOS `caffeinate` doctor branch added
     in round 9 shipped without a regression test. Force `sys.platform` to
     `darwin` and confirm the caffeinate check is emitted."""
@@ -247,7 +238,7 @@ def test_doctor_macos_caffeinate_branch(tmp_path: Path, monkeypatch):
     assert "caffeinate" in result.stdout
 
 
-def test_doctor_linux_systemd_inhibit_branch(tmp_path: Path, monkeypatch):
+def test_doctor_linux_systemd_inhibit_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     import aidor.cli as cli_mod
 
     monkeypatch.setattr(cli_mod.sys, "platform", "linux")
@@ -264,7 +255,7 @@ def test_doctor_linux_systemd_inhibit_branch(tmp_path: Path, monkeypatch):
     assert "systemd-inhibit" in result.stdout
 
 
-def test_doctor_windows_branch(tmp_path: Path, monkeypatch):
+def test_doctor_windows_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     import aidor.cli as cli_mod
 
     monkeypatch.setattr(cli_mod.sys, "platform", "win32")
@@ -279,4 +270,3 @@ def test_doctor_windows_branch(tmp_path: Path, monkeypatch):
         ],
     )
     assert "Windows wake-lock" in result.stdout
-
