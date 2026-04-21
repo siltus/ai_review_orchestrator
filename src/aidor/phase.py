@@ -60,8 +60,10 @@ class PhaseRunner:
     `copilot --continue` retries with exponential back-off).
 
     While a hook of ours is currently executing (e.g. waiting on a human),
-    the idle + round timers are PAUSED via `hook_gate` — a simple counter
-    the hook resolver writes to `.aidor/pending/.busy`.
+    the idle + round timers are PAUSED via the hook-busy gate: the hook
+    resolver writes a pending request as `.aidor/pending/<uuid>.json` and
+    we treat any such file (without a matching `.answer` or `.cancel`) as
+    "a hook is currently waiting".
     """
 
     def __init__(
@@ -168,7 +170,14 @@ class PhaseRunner:
         else:
             kwargs["start_new_session"] = True
 
-        proc = await asyncio.create_subprocess_exec(*argv, **kwargs)
+        # Copilot CLI emits JSONL on stdout; some tool-result lines exceed
+        # the default asyncio StreamReader limit of 64 KiB and would raise
+        # LimitOverrunError mid-readline, killing the stdout reader. Bump
+        # the per-line buffer to 16 MiB; the error handler in read_stdout()
+        # is the belt-and-suspenders fallback.
+        proc = await asyncio.create_subprocess_exec(
+            *argv, limit=16 * 1024 * 1024, **kwargs
+        )
 
         stop_reason = "unknown"
         last_activity = time.monotonic()
@@ -178,7 +187,35 @@ class PhaseRunner:
             nonlocal last_activity, stop_reason
             assert proc.stdout is not None
             while True:
-                line = await proc.stdout.readline()
+                try:
+                    line = await proc.stdout.readline()
+                except (asyncio.LimitOverrunError, ValueError) as exc:
+                    # An individual stdout line exceeded the StreamReader
+                    # buffer limit. Skip past it (drain to next newline) and
+                    # carry on rather than letting the reader task die,
+                    # which would mark the whole phase as 'error' and
+                    # trigger an expensive backoff/restart.
+                    log.warning(
+                        "phase %s-%d: oversized stdout line dropped (%s)",
+                        self.role,
+                        self.phase_index,
+                        exc,
+                    )
+                    self._emit(
+                        PhaseEvent("stdout-text", data=f"[aidor] dropped oversized line: {exc}")
+                    )
+                    last_activity = time.monotonic()
+                    try:
+                        while True:
+                            chunk = await proc.stdout.read(65536)
+                            if not chunk:
+                                return
+                            if b"\n" in chunk:
+                                break
+                    except (asyncio.LimitOverrunError, ValueError):
+                        # Pathological: keep draining without buffering.
+                        continue
+                    continue
                 if not line:
                     break
                 last_activity = time.monotonic()
