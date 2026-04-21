@@ -1,0 +1,18 @@
+# Pre-approved lint-rule exceptions, used by the hook resolver to auto-approve
+# `ask_user` questions of class `lint_exception` without escalating to a human.
+#
+# Each entry is a dict with:
+#   rule:       the linter rule id (e.g. "E501", "no-unused-vars")
+#   linter:     the linter name (e.g. "ruff", "eslint") — optional
+#   path_glob:  file path glob where the exception is allowed — optional
+#   reason:     short reason returned to the agent
+#
+# Edit this file freely. aidor will never overwrite it after bootstrap.
+
+exceptions: []
+# Example:
+# exceptions:
+#   - rule: E501
+#     linter: ruff
+#     path_glob: "src/**/*_urls.py"
+#     reason: "Long URL literals in URL constants are acceptable."

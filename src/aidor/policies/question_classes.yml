@@ -1,0 +1,66 @@
+# Question classification for the `ask_user` hook resolver.
+# Each class has regex/keyword rules; the resolver picks the first matching
+# class. If the class has a `deterministic_answer`, that answer is returned
+# without escalating to a human. Otherwise the human is asked.
+
+classes:
+  - name: lint_exception
+    keywords:
+      - "noqa"
+      - "disable"
+      - "lint"
+      - "eslint-disable"
+      - "pylint"
+      - "ruff"
+    pattern: '(?i)(noqa|eslint-disable|lint exception|suppress .* rule|disable .* rule)'
+    # Resolved against .aidor/allowed_exceptions.yml — if a match exists the
+    # answer is "approved"; otherwise escalate.
+    deterministic: policy_lookup
+    source: "allowed_exceptions"
+
+  - name: file_outside_repo
+    keywords:
+      - "outside the repo"
+      - "outside the repository"
+      - "parent directory"
+    pattern: '(?i)(outside (the )?(repo|repository)|\.\./|home directory|/etc/)'
+    deterministic: fixed_answer
+    answer: "No. You must only read and write files inside this repository."
+
+  - name: push_to_remote
+    keywords:
+      - "git push"
+      - "push to remote"
+    pattern: '(?i)(git push|push to (remote|origin|github))'
+    deterministic: fixed_answer
+    answer: "No. Never push to a remote. Leave commits local."
+
+  - name: global_install
+    keywords:
+      - "install globally"
+      - "sudo"
+      - "-g"
+    pattern: '(?i)(install .* globally|sudo .*install|npm install -g|pip install(?! --user|.*-e \.))'
+    deterministic: fixed_answer
+    answer: "No. Do not install anything globally or with sudo."
+
+  - name: missing_spec
+    keywords:
+      - "not specified"
+      - "ambiguous"
+      - "unclear"
+      - "which approach"
+    pattern: '(?i)(not specified|ambiguous|unclear|which approach|should i choose|clarif)'
+    deterministic: ask_human
+
+  - name: tool_missing
+    keywords:
+      - "not installed"
+      - "command not found"
+    pattern: '(?i)(not installed|command not found|could not find .* executable)'
+    deterministic: ask_human
+
+# Fallback if no class matches
+fallback:
+  name: unknown
+  deterministic: ask_human
