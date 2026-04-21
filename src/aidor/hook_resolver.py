@@ -94,12 +94,14 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
         if decision is not None:
             return decision
 
-    # Defensive shell re-check (flag matrix is primary, this is belt-and-suspenders).
-    # The generic `shell` tool name is included because `guard_profile.py`
-    # emits `shell(...)` allow rules and Copilot may dispatch the tool under
-    # any of these names — every shell surface must run the same containment
-    # check or whitelisted file cmdlets become an out-of-repo escape hatch.
+    # Shell-policy enforcement. The flag matrix in earlier revisions did
+    # this, but the CLI's flag grammar can't express most of what we
+    # need (see `guard_profile.py` module docstring); the hook is now
+    # the sole enforcer of shell policy.
     if tool in {"bash", "powershell", "shell"}:
+        decision = _check_shell_deny_rules(payload, args)
+        if decision is not None:
+            return decision
         decision = _check_shell_escape(payload, args)
         if decision is not None:
             return decision
@@ -108,14 +110,14 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
 
 
 def _on_permission_request(event: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    """permissionRequest: fires when rule-based checks find no match.
+    """permissionRequest: with `--allow-all-tools --allow-all-paths` the
+    approval layer short-circuits, so this event is rare (it can still
+    fire for tools not covered by the matrix, e.g. MCP or URL requests).
 
-    In programmatic mode (`-p`) with no interactive TTY, Copilot defaults to
-    deny. We therefore only use this hook to log breadcrumbs and rely on the
-    explicit --allow-tool / --deny-tool matrix for policy.
-    """
+    We log a breadcrumb and fall through; the `preToolUse` hook has
+    already had a chance to deny."""
     tool = _get_field(payload, "toolName", "tool_name", default="")
-    _log_breadcrumb(payload, f"permissionRequest tool={tool!r} (defaulting to Copilot policy)")
+    _log_breadcrumb(payload, f"permissionRequest tool={tool!r} (no decision; hook is primary)")
     return None
 
 
@@ -401,6 +403,239 @@ def _check_path_containment(payload: dict[str, Any], args: dict[str, Any]) -> di
                     ),
                 }
     return None
+
+
+# ---- Shell policy enforcement ---------------------------------------------
+#
+# The following tables encode the security policy that used to live in
+# the `guard_profile.py` flag matrix. See that module's docstring for
+# why enforcement moved into the hook.
+
+# Executables whose mere invocation is denied — no subcommand parsing.
+_DENY_EXECUTABLES: frozenset[str] = frozenset(
+    {
+        "sudo",
+        "doas",
+        "curl",
+        "wget",
+        "apt",
+        "apt-get",
+        "brew",
+        "choco",
+        "scoop",
+        "winget",
+        "pipx",
+        # Nested interpreters — route around the whole policy.
+        "iex",
+        "invoke-expression",
+        "start-process",
+    }
+)
+
+# (executable, required-prefix-args-tuple) → denial reason.
+# The args tuple is matched against the START of the non-flag argv for
+# the clause, with a few normalisations (lowercase, strip leading ``--``
+# / ``-`` duplicates, handle `=` value attachments). This gives us the
+# multi-token matching that Copilot's flag grammar can't express.
+_DENY_SUBCOMMANDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("git", ("push",), "git push (never push from an agent session)"),
+    ("git", ("remote",), "git remote (would reconfigure remotes)"),
+    ("sudo", (), "sudo is never permitted"),
+    ("cargo", ("install",), "cargo install is a global install"),
+    ("go", ("install",), "go install is a global install"),
+    ("copilot", ("update",), "copilot update would mutate the CLI"),
+    ("copilot", ("login",), "copilot login would mutate auth state"),
+    ("copilot", ("logout",), "copilot logout would mutate auth state"),
+    ("aidor", ("run",), "aidor run would spawn a nested orchestrator (deadlock)"),
+)
+
+# Token sequences that must appear anywhere in the argv list (in order,
+# contiguous) for the rule to fire. Used for flag-sensitive denies like
+# `npm install -g`, `git config --global`, `dotnet tool install -g`.
+_DENY_SEQUENCES: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("git", ("config", "--global"), "git config --global"),
+    ("git", ("config", "--system"), "git config --system"),
+    ("npm", ("install", "-g"), "npm install -g"),
+    ("npm", ("i", "-g"), "npm i -g"),
+    ("npm", ("install", "--global"), "npm install --global"),
+    ("npm", ("i", "--global"), "npm i --global"),
+    ("pnpm", ("add", "-g"), "pnpm add -g"),
+    ("pnpm", ("install", "-g"), "pnpm install -g"),
+    ("pnpm", ("add", "--global"), "pnpm add --global"),
+    ("yarn", ("global",), "yarn global"),
+    ("npx", ("--yes",), "npx --yes (implicit install)"),
+    ("npx", ("-y",), "npx -y (implicit install)"),
+    ("dotnet", ("tool", "install", "-g"), "dotnet tool install -g"),
+    ("dotnet", ("tool", "install", "--global"), "dotnet tool install --global"),
+    ("dotnet", ("workload", "install"), "dotnet workload install"),
+    ("sdkmanager", ("--install",), "sdkmanager --install"),
+    # Nested shells — route around every other check.
+    ("cmd", ("/c",), "nested cmd /c"),
+    ("cmd", ("/k",), "nested cmd /k"),
+    ("powershell", ("-c",), "nested powershell -c"),
+    ("powershell", ("-command",), "nested powershell -Command"),
+    ("powershell", ("-encodedcommand",), "nested powershell -EncodedCommand"),
+    ("pwsh", ("-c",), "nested pwsh -c"),
+    ("pwsh", ("-command",), "nested pwsh -Command"),
+    ("pwsh", ("-encodedcommand",), "nested pwsh -EncodedCommand"),
+    ("bash", ("-c",), "nested bash -c"),
+    ("sh", ("-c",), "nested sh -c"),
+    ("zsh", ("-c",), "nested zsh -c"),
+)
+
+# Pip-install handling is gated on the repo having a Python lockfile
+# (poetry.lock / uv.lock / Pipfile.lock) AND the phase being configured
+# with allow_local_install=True. We always deny the unsafe sub-forms
+# (--user, --target, --prefix, --root); when a lockfile is present we
+# allow bare `pip install -e .` / `pip install .` / `pip install -r ...`.
+_PIP_INSTALL_UNSAFE_FLAGS: frozenset[str] = frozenset({"--user", "--target", "--prefix", "--root"})
+
+
+def _normalise_exe(token: str) -> str:
+    """Reduce a path-like executable token to its canonical name.
+
+    ``.\\.venv\\Scripts\\python.exe`` → ``python``.
+    """
+    basename = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if basename.endswith(".exe"):
+        basename = basename[:-4]
+    if basename.endswith(".cmd") or basename.endswith(".bat"):
+        basename = basename[:-4]
+    return basename
+
+
+def _iter_shell_clauses(cmd: str) -> Iterator[tuple[str, list[str]]]:
+    """Yield ``(normalised-executable, all-tokens-after-it)`` for every
+    statement in a shell command line.
+
+    Splits on the same statement separators as ``_iter_shell_path_candidates``
+    so ``cd D:\\repo; npm install -g foo`` is decomposed into two clauses
+    (``cd``, ``npm``) and the dangerous one is still detected.
+    """
+    for clause in (c.strip() for c in re.split(r"(?:&&|\|\||;|\||&)", cmd) if c.strip()):
+        try:
+            tokens = shlex.split(clause, posix=False)
+        except ValueError:
+            tokens = clause.split()
+        tokens = [t.strip().strip("`").strip("'\"") for t in tokens if t.strip()]
+        tokens = [t for t in tokens if t and t not in _SHELL_OPERATORS]
+        if not tokens:
+            continue
+        exe = _normalise_exe(tokens[0])
+        rest = tokens[1:]
+        # Special case: `python -m pip install ...` → treat as (pip, install, ...).
+        # Same for `python3`, `py`, and the `-m` module dispatch in general for pip.
+        if exe in {"python", "python3", "py"} and len(rest) >= 2 and rest[0] == "-m":
+            module = rest[1].lower()
+            if module in {"pip", "pip3"}:
+                yield ("pip", rest[2:])
+                continue
+        yield (exe, rest)
+
+
+def _has_contiguous_subsequence(args: list[str], needle: tuple[str, ...]) -> bool:
+    """True iff ``needle`` appears as a contiguous subsequence of
+    ``args``. Matching is case-insensitive. Values attached to flags via
+    ``=`` (``--global=1``) are normalised to the flag alone so
+    ``("config","--global")`` still matches ``git config --global=foo``."""
+    if not needle:
+        return True
+    flat = [_flag_stem(a).lower() for a in args]
+    n = len(needle)
+    target = tuple(s.lower() for s in needle)
+    return any(tuple(flat[i : i + n]) == target for i in range(len(flat) - n + 1))
+
+
+def _flag_stem(token: str) -> str:
+    """``--global=foo`` → ``--global``. Leaves non-flags untouched."""
+    if token.startswith("-") and "=" in token:
+        return token.split("=", 1)[0]
+    return token
+
+
+def _pip_install_allowed(
+    args: list[str], *, allow_local_install: bool, python_lockfile: bool
+) -> tuple[bool, str]:
+    """Decide whether a ``pip install ...`` invocation is permitted.
+
+    Returns ``(allowed, reason)``. ``reason`` is empty when allowed,
+    human-readable when denied.
+    """
+    # Any of the --user / --target / --prefix / --root forms writes
+    # outside the project tree and is always denied.
+    for tok in args:
+        stem = _flag_stem(tok).lower()
+        if stem in _PIP_INSTALL_UNSAFE_FLAGS:
+            return (False, f"pip install {stem} writes outside the repo")
+    if allow_local_install and python_lockfile:
+        return (True, "")
+    return (
+        False,
+        "pip install requires a Python lockfile (poetry.lock / uv.lock / Pipfile.lock) "
+        "and allow_local_install=True",
+    )
+
+
+def _check_shell_deny_rules(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any] | None:
+    """Apply the shell-policy deny rules to every clause in the command.
+
+    Denials are definitive: any matching clause causes the whole tool
+    call to be rejected with a reason the LLM can read.
+    """
+    cmd = args.get("command") or args.get("cmd") or ""
+    if not isinstance(cmd, str) or not cmd:
+        return None
+
+    # Lazy import to avoid a cycle at module load time (guard_profile
+    # imports nothing aidor-local, but keeping the import here mirrors
+    # the existing style for other optional imports in this file).
+    from aidor.guard_profile import detect_python_lockfile
+
+    allow_local_install = os.environ.get("AIDOR_ALLOW_LOCAL_INSTALL", "0") == "1"
+    python_lockfile = allow_local_install and detect_python_lockfile(_repo_root(payload))
+
+    for exe, rest in _iter_shell_clauses(cmd):
+        if exe in _DENY_EXECUTABLES:
+            return _deny(f"{exe} is on the deny list", cmd)
+
+        for rule_exe, required, label in _DENY_SUBCOMMANDS:
+            if exe != rule_exe:
+                continue
+            if not required:
+                return _deny(label, cmd)
+            # Required args must appear at the START of the non-flag
+            # positional stream (to avoid e.g. `git log push` matching
+            # `git push`).
+            positional = [t for t in rest if not t.startswith("-")]
+            head = tuple(p.lower() for p in positional[: len(required)])
+            if head == required:
+                return _deny(label, cmd)
+
+        for rule_exe, sequence, label in _DENY_SEQUENCES:
+            if exe != rule_exe:
+                continue
+            if _has_contiguous_subsequence(rest, sequence):
+                return _deny(label, cmd)
+
+        if exe in {"pip", "pip3"}:
+            positional = [t for t in rest if not t.startswith("-")]
+            if positional and positional[0].lower() == "install":
+                allowed, reason = _pip_install_allowed(
+                    rest,
+                    allow_local_install=allow_local_install,
+                    python_lockfile=python_lockfile,
+                )
+                if not allowed:
+                    return _deny(reason, cmd)
+
+    return None
+
+
+def _deny(reason: str, cmd: str) -> dict[str, Any]:
+    return {
+        "permissionDecision": "deny",
+        "permissionDecisionReason": f"[aidor guard] refusing {reason}: {cmd!r}",
+    }
 
 
 # Path-like tokens we extract from a shell command line for containment

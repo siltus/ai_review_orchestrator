@@ -388,6 +388,7 @@ class PhaseRunner:
         env["AIDOR_REPO"] = str(self.config.repo)
         env["AIDOR_ROLE"] = self.role
         env["AIDOR_PHASE_INDEX"] = str(self.phase_index)
+        env["AIDOR_ALLOW_LOCAL_INSTALL"] = "1" if self.config.allow_local_install else "0"
         env["COPILOT_OTEL_FILE_EXPORTER_PATH"] = str(self.otel_path)
         env["PYTHONUNBUFFERED"] = "1"
         return env

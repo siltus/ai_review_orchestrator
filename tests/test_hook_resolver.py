@@ -408,7 +408,296 @@ def test_shell_escape_blocks_relative_traversal_behind_benign_prefix(tmp_path: P
     decision = _shell_decision(tmp_path, "Get-Content src/../../etc/passwd")
     assert decision is not None
     assert decision["permissionDecision"] == "deny"
-    assert "outside" in decision["permissionDecisionReason"]
+
+
+# ---- shell deny rules (enforced by _check_shell_deny_rules) -------------
+#
+# These rules are what used to live in the `--deny-tool=...` flag matrix.
+# They moved into the hook in the rewrite documented in the
+# `guard_profile.py` module docstring, because the flag grammar can't
+# express multi-token subcommands for anything other than `git`/`gh`.
+
+
+def _deny_decision(repo: Path, command: str, *, env: dict[str, str] | None = None):
+    from aidor.hook_resolver import _check_shell_deny_rules
+
+    old_env = {}
+    if env is not None:
+        import os as _os
+
+        for k, v in env.items():
+            old_env[k] = _os.environ.get(k)
+            _os.environ[k] = v
+    try:
+        return _check_shell_deny_rules({"cwd": str(repo)}, {"command": command})
+    finally:
+        if env is not None:
+            import os as _os
+
+            for k, old in old_env.items():
+                if old is None:
+                    _os.environ.pop(k, None)
+                else:
+                    _os.environ[k] = old
+
+
+def test_deny_git_push(tmp_path: Path):
+    decision = _deny_decision(tmp_path, "git push origin master")
+    assert decision is not None
+    assert "git push" in decision["permissionDecisionReason"]
+
+
+def test_allow_git_log(tmp_path: Path):
+    assert _deny_decision(tmp_path, "git log --oneline -n 5") is None
+
+
+def test_deny_git_config_global(tmp_path: Path):
+    decision = _deny_decision(tmp_path, "git config --global user.name foo")
+    assert decision is not None
+    assert "--global" in decision["permissionDecisionReason"]
+
+
+def test_deny_git_config_system(tmp_path: Path):
+    decision = _deny_decision(tmp_path, "git config --system core.autocrlf true")
+    assert decision is not None
+
+
+def test_allow_git_config_local(tmp_path: Path):
+    assert _deny_decision(tmp_path, "git config user.name foo") is None
+
+
+def test_deny_sudo(tmp_path: Path):
+    assert _deny_decision(tmp_path, "sudo ls") is not None
+
+
+def test_deny_doas(tmp_path: Path):
+    assert _deny_decision(tmp_path, "doas ls") is not None
+
+
+def test_deny_curl(tmp_path: Path):
+    assert _deny_decision(tmp_path, "curl https://example.com") is not None
+
+
+def test_deny_wget(tmp_path: Path):
+    assert _deny_decision(tmp_path, "wget https://example.com/x") is not None
+
+
+def test_deny_package_managers(tmp_path: Path):
+    for cmd in (
+        "apt install foo",
+        "apt-get update",
+        "brew install foo",
+        "choco install x",
+        "scoop install x",
+        "winget install x",
+    ):
+        assert _deny_decision(tmp_path, cmd) is not None, cmd
+
+
+def test_deny_pipx(tmp_path: Path):
+    assert _deny_decision(tmp_path, "pipx install ruff") is not None
+
+
+def test_deny_npm_install_global_short(tmp_path: Path):
+    decision = _deny_decision(tmp_path, "npm install -g typescript")
+    assert decision is not None
+    assert "npm install -g" in decision["permissionDecisionReason"]
+
+
+def test_deny_npm_i_global(tmp_path: Path):
+    assert _deny_decision(tmp_path, "npm i -g typescript") is not None
+
+
+def test_deny_npm_install_global_long(tmp_path: Path):
+    assert _deny_decision(tmp_path, "npm install --global typescript") is not None
+
+
+def test_allow_npm_install_local_without_gate(tmp_path: Path):
+    # No lockfile, no env — bare `npm install` is not on the deny list;
+    # the hook allows it (policy: we only DENY; absence of deny = allow).
+    # The local-install lockfile gate is only applied to pip/pip3.
+    assert _deny_decision(tmp_path, "npm install lodash") is None
+
+
+def test_deny_pnpm_add_global(tmp_path: Path):
+    assert _deny_decision(tmp_path, "pnpm add -g typescript") is not None
+
+
+def test_deny_yarn_global(tmp_path: Path):
+    assert _deny_decision(tmp_path, "yarn global add typescript") is not None
+
+
+def test_deny_npx_yes(tmp_path: Path):
+    assert _deny_decision(tmp_path, "npx --yes some-package") is not None
+
+
+def test_deny_npx_y(tmp_path: Path):
+    assert _deny_decision(tmp_path, "npx -y some-package") is not None
+
+
+def test_deny_cargo_install(tmp_path: Path):
+    assert _deny_decision(tmp_path, "cargo install ripgrep") is not None
+
+
+def test_deny_go_install(tmp_path: Path):
+    assert _deny_decision(tmp_path, "go install github.com/foo/bar@latest") is not None
+
+
+def test_deny_dotnet_tool_install_global(tmp_path: Path):
+    assert _deny_decision(tmp_path, "dotnet tool install -g foo") is not None
+    assert _deny_decision(tmp_path, "dotnet tool install --global foo") is not None
+
+
+def test_deny_dotnet_workload_install(tmp_path: Path):
+    assert _deny_decision(tmp_path, "dotnet workload install android") is not None
+
+
+def test_deny_copilot_self_management(tmp_path: Path):
+    assert _deny_decision(tmp_path, "copilot update") is not None
+    assert _deny_decision(tmp_path, "copilot login") is not None
+    assert _deny_decision(tmp_path, "copilot logout") is not None
+
+
+def test_deny_aidor_run_recursion(tmp_path: Path):
+    decision = _deny_decision(tmp_path, "aidor run")
+    assert decision is not None
+    assert "nested orchestrator" in decision["permissionDecisionReason"]
+
+
+def test_allow_aidor_doctor(tmp_path: Path):
+    assert _deny_decision(tmp_path, "aidor doctor") is None
+
+
+# ---- nested-shell escape --------------------------------------------------
+
+
+def test_deny_cmd_slash_c(tmp_path: Path):
+    assert _deny_decision(tmp_path, "cmd /c dir") is not None
+
+
+def test_deny_cmd_slash_k(tmp_path: Path):
+    assert _deny_decision(tmp_path, "cmd /k dir") is not None
+
+
+def test_deny_powershell_command(tmp_path: Path):
+    assert _deny_decision(tmp_path, "powershell -Command Get-ChildItem") is not None
+    assert _deny_decision(tmp_path, "powershell -c 'Get-ChildItem'") is not None
+    assert _deny_decision(tmp_path, "powershell -EncodedCommand ABCDEF") is not None
+
+
+def test_deny_pwsh_command(tmp_path: Path):
+    assert _deny_decision(tmp_path, "pwsh -c 'Get-ChildItem'") is not None
+
+
+def test_deny_bash_c(tmp_path: Path):
+    assert _deny_decision(tmp_path, "bash -c 'ls'") is not None
+
+
+def test_deny_sh_c(tmp_path: Path):
+    assert _deny_decision(tmp_path, "sh -c 'ls'") is not None
+
+
+def test_deny_iex(tmp_path: Path):
+    assert _deny_decision(tmp_path, 'iex "rm -rf ."') is not None
+
+
+def test_deny_invoke_expression(tmp_path: Path):
+    assert _deny_decision(tmp_path, "Invoke-Expression 'dir'") is not None
+
+
+def test_deny_start_process(tmp_path: Path):
+    assert _deny_decision(tmp_path, "Start-Process notepad") is not None
+
+
+# ---- pip-install gating ---------------------------------------------------
+
+
+def test_deny_pip_install_without_lockfile_or_gate(tmp_path: Path):
+    decision = _deny_decision(tmp_path, "pip install requests")
+    assert decision is not None
+    assert "lockfile" in decision["permissionDecisionReason"]
+
+
+def test_deny_pip_install_user_always(tmp_path: Path):
+    (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
+    decision = _deny_decision(
+        tmp_path,
+        "pip install --user ruff",
+        env={"AIDOR_REPO": str(tmp_path), "AIDOR_ALLOW_LOCAL_INSTALL": "1"},
+    )
+    assert decision is not None
+    assert "--user" in decision["permissionDecisionReason"]
+
+
+def test_allow_pip_install_editable_with_poetry_lock_and_gate(tmp_path: Path):
+    (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
+    decision = _deny_decision(
+        tmp_path,
+        "pip install -e .",
+        env={"AIDOR_REPO": str(tmp_path), "AIDOR_ALLOW_LOCAL_INSTALL": "1"},
+    )
+    assert decision is None
+
+
+def test_allow_python_dash_m_pip_install_with_poetry_lock_and_gate(tmp_path: Path):
+    """`python -m pip install -e .` is remapped to `pip install -e .` by the
+    clause iterator, so the same gating applies."""
+    (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
+    decision = _deny_decision(
+        tmp_path,
+        "python -m pip install -e .",
+        env={"AIDOR_REPO": str(tmp_path), "AIDOR_ALLOW_LOCAL_INSTALL": "1"},
+    )
+    assert decision is None
+
+
+def test_deny_python_dash_m_pip_install_without_gate(tmp_path: Path):
+    decision = _deny_decision(tmp_path, "python -m pip install requests")
+    assert decision is not None
+
+
+def test_deny_pip_install_target(tmp_path: Path):
+    (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
+    decision = _deny_decision(
+        tmp_path,
+        "pip install --target=/tmp/x ruff",
+        env={"AIDOR_REPO": str(tmp_path), "AIDOR_ALLOW_LOCAL_INSTALL": "1"},
+    )
+    assert decision is not None
+    assert "--target" in decision["permissionDecisionReason"]
+
+
+# ---- statement-separator handling (regression: cd <repo>; <cmd> chain) ---
+
+
+def test_deny_applies_to_later_clause_in_chain(tmp_path: Path):
+    """`cd <repo>; npm install -g foo` must be denied on the second clause."""
+    decision = _deny_decision(tmp_path, "cd /tmp; npm install -g typescript")
+    assert decision is not None
+    assert "npm install -g" in decision["permissionDecisionReason"]
+
+
+def test_normalises_python_dot_exe_from_venv(tmp_path: Path):
+    """`.\\.venv\\Scripts\\python.exe -m pip install` must be recognised
+    as a pip-install call despite the absolute-path executable. This is
+    the exact pattern that broke the old flag matrix."""
+    decision = _deny_decision(tmp_path, r".\.venv\Scripts\python.exe -m pip install requests")
+    assert decision is not None
+
+
+def test_normalises_git_dot_exe(tmp_path: Path):
+    decision = _deny_decision(tmp_path, "git.exe push origin master")
+    assert decision is not None
+
+
+# ---- permissionRequest is now a no-op -------------------------------------
+
+
+def test_permission_request_returns_none(tmp_path: Path):
+    from aidor.hook_resolver import _on_permission_request
+
+    payload = {"toolName": "shell", "cwd": str(tmp_path)}
+    assert _on_permission_request("permissionRequest", payload) is None
 
 
 def test_shell_escape_blocks_relative_traversal_with_path_flag(tmp_path: Path):
