@@ -103,6 +103,60 @@ _BASE_ALLOW = (
     # reopen them. It just lets `git --version`, `git help`, `git reflog`,
     # etc. work without each being enumerated.
     "shell(git)",
+    # Node / TypeScript / JavaScript toolchain. Bare `npm` / `pnpm` /
+    # `yarn` are fine — the `-g` / `global` forms stay denied above, and
+    # deny takes precedence. Local `install` / `ci` for JS ecosystems
+    # are only enabled by the lockfile-gated `--allow-local-install`
+    # path in `_LOCAL_INSTALL_ECOSYSTEMS`; everything listed here is the
+    # read / build / test / lint surface every Node coder needs.
+    "shell(node)",
+    "shell(node.exe)",
+    "shell(npm)",
+    "shell(npm.cmd)",
+    "shell(npx)",
+    "shell(npx.cmd)",
+    "shell(pnpm)",
+    "shell(pnpm.cmd)",
+    "shell(pnpx)",
+    "shell(yarn)",
+    "shell(yarn.cmd)",
+    "shell(tsc)",
+    "shell(tsc.cmd)",
+    "shell(ts-node)",
+    "shell(eslint)",
+    "shell(eslint.cmd)",
+    "shell(prettier)",
+    "shell(prettier.cmd)",
+    "shell(jest)",
+    "shell(jest.cmd)",
+    "shell(vitest)",
+    "shell(vitest.cmd)",
+    "shell(mocha)",
+    "shell(playwright)",
+    # .NET / C# toolchain. `dotnet tool install -g` stays denied via the
+    # explicit entries in `_BASE_DENY` below.
+    "shell(dotnet)",
+    "shell(dotnet.exe)",
+    "shell(msbuild)",
+    "shell(nuget)",
+    # Android / Gradle / Kotlin. Gradle wrappers (`./gradlew`,
+    # `gradlew.bat`) are the canonical way to run Android builds; list
+    # both bare and wrapper forms.
+    "shell(gradle)",
+    "shell(gradlew)",
+    "shell(gradlew.bat)",
+    "shell(./gradlew)",
+    "shell(.\\gradlew.bat)",
+    "shell(mvn)",
+    "shell(mvnw)",
+    "shell(mvnw.cmd)",
+    "shell(adb)",
+    "shell(sdkmanager)",
+    "shell(avdmanager)",
+    "shell(kotlin)",
+    "shell(kotlinc)",
+    "shell(java)",
+    "shell(javac)",
     # Build / test commands discovered from manifests are appended below.
 )
 
@@ -146,6 +200,19 @@ _BASE_DENY = (
     "shell(copilot update)",
     "shell(copilot login)",
     "shell(copilot logout)",
+    # .NET global tool installs — the bare `dotnet` allow entry above
+    # must not accidentally re-enable `dotnet tool install -g`.
+    "shell(dotnet tool install -g)",
+    "shell(dotnet tool install --global)",
+    "shell(dotnet workload install)",
+    # npx auto-install escape hatch — we allow `npx` for running local
+    # devDependencies, but `npx --yes <pkg>` silently downloads arbitrary
+    # packages from the registry, which is the same threat model as a
+    # global install.
+    "shell(npx --yes)",
+    "shell(npx -y)",
+    # Android SDK installs (network fetch + system-wide side effects).
+    "shell(sdkmanager --install)",
 )
 
 

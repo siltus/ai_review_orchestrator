@@ -286,5 +286,81 @@ def test_unrelated_shell_commands_remain_denied(tmp_path):
         "shell(curl)",
         "shell(npm install -g)",
         "shell(sudo)",
+        # New ecosystems: install-global / self-update escape hatches
+        # stay denied even though the bare tool is allowed.
+        "shell(dotnet tool install -g)",
+        "shell(dotnet tool install --global)",
+        "shell(npx --yes)",
+        "shell(npx -y)",
+        "shell(sdkmanager --install)",
     ):
         assert d in deny
+
+
+# ---- Extended ecosystem allowlist (Node / .NET / Android) --------------
+
+
+def test_node_toolchain_allowed(tmp_path):
+    """Node / TypeScript coders must be able to invoke the bare
+    toolchain without tripping the Guard. Global-install forms stay
+    denied."""
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    for rule in (
+        "shell(node)",
+        "shell(npm)",
+        "shell(npx)",
+        "shell(pnpm)",
+        "shell(yarn)",
+        "shell(tsc)",
+        "shell(eslint)",
+        "shell(prettier)",
+        "shell(jest)",
+        "shell(vitest)",
+    ):
+        assert rule in allow, f"missing node allow for {rule}"
+    for rule in (
+        "shell(npm install -g)",
+        "shell(npm i -g)",
+        "shell(pnpm add -g)",
+        "shell(yarn global)",
+        "shell(npx --yes)",
+    ):
+        assert rule in deny, f"expected deny for {rule}"
+
+
+def test_dotnet_toolchain_allowed(tmp_path):
+    """.NET / C# coders must be able to invoke `dotnet`, `msbuild`,
+    `nuget`. Global-tool installs stay denied."""
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    for rule in ("shell(dotnet)", "shell(msbuild)", "shell(nuget)"):
+        assert rule in allow, f"missing dotnet allow for {rule}"
+    for rule in (
+        "shell(dotnet tool install -g)",
+        "shell(dotnet tool install --global)",
+        "shell(dotnet workload install)",
+    ):
+        assert rule in deny, f"expected deny for {rule}"
+
+
+def test_android_toolchain_allowed(tmp_path):
+    """Android / Gradle coders must be able to invoke Gradle wrappers,
+    Maven, `adb`, and the JDK. SDK-install commands stay denied."""
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    for rule in (
+        "shell(gradle)",
+        "shell(gradlew)",
+        "shell(gradlew.bat)",
+        "shell(mvn)",
+        "shell(mvnw)",
+        "shell(adb)",
+        "shell(sdkmanager)",
+        "shell(kotlin)",
+        "shell(kotlinc)",
+        "shell(java)",
+        "shell(javac)",
+    ):
+        assert rule in allow, f"missing android allow for {rule}"
+    assert "shell(sdkmanager --install)" in deny
