@@ -48,6 +48,10 @@ def test_hooks_json_bakes_python_interpreter(run_config):
                 assert "aidor-hook" not in cmd[key]
                 # sys.executable (or its quoted form) should appear.
                 assert sys.executable.replace("\\", "\\\\") in cmd[key] or sys.executable in cmd[key]
+            # PowerShell specifically needs the call operator to invoke a
+            # quoted executable, otherwise PS parses it as a bare string.
+            assert cmd["powershell"].startswith("& ")
+            assert not cmd["bash"].startswith("& ")
 
 
 def test_bootstrap_preserves_existing_agents_md_prefix(run_config):

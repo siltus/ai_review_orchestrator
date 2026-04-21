@@ -3,6 +3,7 @@
         ".\\.venv\\Scripts\\python.exe": true,
         ".\\.venv\\Scripts\\aidor.exe": true,
         "Get-Command": true,
-        "copilot": true
+        "copilot": true,
+        "Get-Process": true
     }
 }

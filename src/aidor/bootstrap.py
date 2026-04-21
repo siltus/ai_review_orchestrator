@@ -42,11 +42,14 @@ def _render_hooks_json() -> str:
     """Generate hooks.json with sys.executable baked in for both bash and
     powershell invocations. This removes the PATH dependency — the hook runs
     in the same Python that installed aidor, which has PyYAML and the
-    aidor package on its sys.path."""
+    aidor package on its sys.path.
+
+    Note: PowerShell requires the call operator `&` to invoke a quoted
+    executable; bash does not.
+    """
     py = _shell_quote(sys.executable)
-    cmd_template = "{py} -m aidor.hook_resolver {{event}}"
-    bash_cmd = cmd_template.format(py=py)
-    ps_cmd = cmd_template.format(py=py)
+    bash_template = f"{py} -m aidor.hook_resolver {{event}}"
+    ps_template = f"& {py} -m aidor.hook_resolver {{event}}"
 
     hooks = {
         "version": 1,
@@ -54,8 +57,8 @@ def _render_hooks_json() -> str:
             event: [
                 {
                     "type": "command",
-                    "bash": bash_cmd.format(event=event),
-                    "powershell": ps_cmd.format(event=event),
+                    "bash": bash_template.format(event=event),
+                    "powershell": ps_template.format(event=event),
                     "timeoutSec": timeout,
                 }
             ]
