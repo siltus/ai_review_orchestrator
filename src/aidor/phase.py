@@ -175,9 +175,7 @@ class PhaseRunner:
         # LimitOverrunError mid-readline, killing the stdout reader. Bump
         # the per-line buffer to 16 MiB; the error handler in read_stdout()
         # is the belt-and-suspenders fallback.
-        proc = await asyncio.create_subprocess_exec(
-            *argv, limit=16 * 1024 * 1024, **kwargs
-        )
+        proc = await asyncio.create_subprocess_exec(*argv, limit=16 * 1024 * 1024, **kwargs)
 
         stop_reason = "unknown"
         last_activity = time.monotonic()
@@ -259,9 +257,26 @@ class PhaseRunner:
             warned = False
             paused_total = 0.0
             pause_started: float | None = None
+            # Timestamp of the previous watchdog tick (or phase_start for the
+            # first tick). On a busy-edge we attribute the interval since the
+            # previous tick to the pause — otherwise we'd lose up to one
+            # polling interval (~1s) of pause credit per pause, which can
+            # flakily trip the round-timeout on tight parametrisations.
+            prev_tick = phase_start
+            # Schedule ticks on an absolute timeline rather than via cumulative
+            # ``asyncio.sleep(1.0)``. The latter accumulates ~20 ms of drift
+            # per tick on a busy event loop, which pushes effective_elapsed
+            # over the round-timeout threshold on the final tick of runs that
+            # should legitimately finish right at the boundary.
+            poll_interval = 1.0
+            next_tick = phase_start + poll_interval
             abort_marker = self.config.aidor_dir / "ABORT"
             while proc.returncode is None:
-                await asyncio.sleep(1.0)
+                now = time.monotonic()
+                delay = next_tick - now
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                next_tick += poll_interval
                 if abort_marker.exists():
                     log.warning(
                         "phase %s-%d aborted via .aidor/ABORT marker",
@@ -277,7 +292,11 @@ class PhaseRunner:
                     # comparison once the hook completes.
                     last_activity = now
                     if pause_started is None:
-                        pause_started = now
+                        # Attribute the span since the previous tick to the
+                        # pause as well — the hook may have been pending the
+                        # whole interval, we just hadn't polled yet.
+                        pause_started = prev_tick
+                    prev_tick = now
                     continue
                 if pause_started is not None:
                     paused_total += now - pause_started
@@ -293,6 +312,7 @@ class PhaseRunner:
                 if idle_s > self.config.idle_timeout_s + 60:
                     log.warning("phase %s-%d idle too long", self.role, self.phase_index)
                     return "idle"
+                prev_tick = now
             return ""
 
         # Run all three tasks concurrently; kill-on-watchdog by cancelling.

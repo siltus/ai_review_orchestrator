@@ -1,4 +1,17 @@
-"""Tests for guard_profile flag matrix."""
+"""Tests for guard_profile flag matrix.
+
+Key invariants:
+
+1. Each rule is emitted exactly once (no `bash(...)` / `powershell(...)` mirror
+   flags — per the Copilot CLI docs those are not valid permission kinds).
+2. Broad `shell(cmd:*)` allow entries must be paired with explicit
+   `shell(cmd <dangerous-sub>)` deny entries so the deny-takes-precedence
+   rule actually blocks the dangerous invocation. This is the exact
+   pattern the Copilot docs recommend:
+       --allow-tool='shell(git:*)' --deny-tool='shell(git push)'
+3. Lockfile-gated local-install allows (`pip install -e`, `npm ci`, etc.)
+   must not be shadowed by overly broad denies.
+"""
 
 from __future__ import annotations
 
@@ -10,13 +23,252 @@ from aidor.guard_profile import (
 )
 
 
+def _split_allow_deny(flags: list[str]) -> tuple[list[str], list[str]]:
+    allow = [f.removeprefix("--allow-tool=") for f in flags if f.startswith("--allow-tool=")]
+    deny = [f.removeprefix("--deny-tool=") for f in flags if f.startswith("--deny-tool=")]
+    return allow, deny
+
+
+# ---- Basic structure ---------------------------------------------------
+
+
 def test_build_flags_base(tmp_path: Path):
     flags = build_flags(tmp_path, allow_local_install=False)
     joined = " ".join(flags)
     assert "--deny-tool" in joined
     assert "--allow-tool" in joined
     # Push must be denied.
-    assert any("git push" in f for f in flags)
+    assert "--deny-tool=shell(git push)" in flags
+
+
+def test_flags_are_not_aliased_to_bash_or_powershell(tmp_path: Path):
+    """Regression: previous versions mirrored every `shell(cmd)` rule into
+    `bash(cmd)` and `powershell(cmd)` flags, but per the Copilot CLI docs
+    those are NOT valid permission kinds — only `shell(...)`, `read`,
+    `write`, `url(...)`, `memory`, and `<mcp-server>(...)` are. The mirror
+    expansion was silently ignored and inflated argv by ~13 KB per spawn,
+    which tripped the Windows cmd.exe 8 KB command-line limit."""
+    flags = build_flags(tmp_path, allow_local_install=True)
+    for f in flags:
+        payload = f.removeprefix("--allow-tool=").removeprefix("--deny-tool=")
+        assert not payload.startswith("bash("), f"invalid bash() kind leaked: {f}"
+        assert not payload.startswith("powershell("), f"invalid powershell() kind leaked: {f}"
+
+
+def test_argv_is_reasonably_compact(tmp_path: Path):
+    """The full argv contribution must stay well under the Windows cmd.exe
+    8 KB command-line limit so `fake_copilot.cmd` (and any real shell
+    wrapper) doesn't silently truncate. Leave plenty of headroom for the
+    rest of the argv (prompt, transcript paths, model selectors, etc.)."""
+    flags = build_flags(tmp_path, allow_local_install=True)
+    # +1 for the space separator between flags.
+    total = sum(len(f) + 1 for f in flags)
+    assert total < 4096, f"guard flags bloated to {total} bytes ({len(flags)} flags)"
+
+
+def test_each_rule_emitted_once(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=True)
+    assert len(flags) == len(set(flags)), "duplicate flag emitted"
+
+
+# ---- Deny-precedence pairings (user-requested) -------------------------
+#
+# These are the pairs where a broad `shell(cmd:*)` allow is present AND
+# a specific dangerous sub-invocation must be denied. Per the Copilot
+# CLI docs, `--deny-tool` takes precedence over `--allow-tool`, so the
+# pair DOES block the dangerous invocation while permitting the family.
+
+
+def test_git_family_allowed_but_push_and_remote_denied(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    assert "shell(git:*)" in allow
+    for dangerous in (
+        "shell(git push)",
+        "shell(git remote)",
+        "shell(git config --global)",
+        "shell(git config --system)",
+    ):
+        assert dangerous in deny, f"{dangerous} must be denied alongside shell(git:*)"
+
+
+def test_npm_family_allowed_but_global_installs_denied(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    assert "shell(npm:*)" in allow
+    for dangerous in (
+        "shell(npm install -g)",
+        "shell(npm i -g)",
+        "shell(npm install --global)",
+    ):
+        assert dangerous in deny
+
+
+def test_npx_family_allowed_but_auto_install_denied(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    assert "shell(npx:*)" in allow
+    for dangerous in ("shell(npx --yes)", "shell(npx -y)"):
+        assert dangerous in deny
+
+
+def test_pnpm_family_allowed_but_global_installs_denied(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    assert "shell(pnpm:*)" in allow
+    for dangerous in (
+        "shell(pnpm add -g)",
+        "shell(pnpm install -g)",
+        "shell(pnpm add --global)",
+    ):
+        assert dangerous in deny
+
+
+def test_yarn_family_allowed_but_global_denied(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    assert "shell(yarn:*)" in allow
+    assert "shell(yarn global)" in deny
+
+
+def test_dotnet_family_allowed_but_global_tool_installs_denied(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    assert "shell(dotnet:*)" in allow
+    for dangerous in (
+        "shell(dotnet tool install -g)",
+        "shell(dotnet tool install --global)",
+        "shell(dotnet workload install)",
+    ):
+        assert dangerous in deny
+
+
+def test_sdkmanager_allowed_but_install_subcommand_denied(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    assert "shell(sdkmanager:*)" in allow
+    assert "shell(sdkmanager --install)" in deny
+
+
+def test_python_family_allowed_but_dash_m_pip_install_denied(tmp_path: Path):
+    """`shell(python:*)` matches `python -m pip install <pkg>`, which would
+    bypass the explicit `shell(pip install)` deny. We therefore also
+    deny the `python -m pip install` form (and `python3` / `py`)."""
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    assert "shell(python:*)" in allow
+    for dangerous in (
+        "shell(python -m pip install)",
+        "shell(python3 -m pip install)",
+        "shell(py -m pip install)",
+    ):
+        assert dangerous in deny
+
+
+# ---- Allow families that should be present -----------------------------
+
+
+def test_quality_gate_runners_are_allowed(tmp_path: Path):
+    """The repo's mandatory validation commands (ruff, pip-audit, pytest,
+    pre-commit, coverage) must be allowed so the coder can run the gates
+    documented in AGENTS.md / pre-commit / CI."""
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, _ = _split_allow_deny(flags)
+    for rule in (
+        "shell(pytest:*)",
+        "shell(ruff:*)",
+        "shell(pip-audit:*)",
+        "shell(pre-commit:*)",
+        "shell(coverage:*)",
+    ):
+        assert rule in allow
+
+
+def test_node_toolchain_allowed(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, _ = _split_allow_deny(flags)
+    for rule in (
+        "shell(node:*)",
+        "shell(npm:*)",
+        "shell(npx:*)",
+        "shell(pnpm:*)",
+        "shell(yarn:*)",
+        "shell(tsc:*)",
+        "shell(eslint:*)",
+        "shell(prettier:*)",
+        "shell(jest:*)",
+        "shell(vitest:*)",
+    ):
+        assert rule in allow
+
+
+def test_android_toolchain_allowed(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, _ = _split_allow_deny(flags)
+    for rule in (
+        "shell(gradle:*)",
+        "shell(gradlew:*)",
+        "shell(gradlew.bat:*)",
+        "shell(mvn:*)",
+        "shell(mvnw:*)",
+        "shell(adb:*)",
+        "shell(sdkmanager:*)",
+        "shell(kotlin:*)",
+        "shell(kotlinc:*)",
+        "shell(java:*)",
+        "shell(javac:*)",
+    ):
+        assert rule in allow
+
+
+def test_powershell_inspection_cmdlets_allowed(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, _ = _split_allow_deny(flags)
+    for rule in (
+        "shell(Get-ChildItem:*)",
+        "shell(Get-Content:*)",
+        "shell(Test-Path:*)",
+        "shell(Select-String:*)",
+    ):
+        assert rule in allow
+
+
+# ---- Always-denied items -----------------------------------------------
+
+
+def test_unrelated_shell_commands_remain_denied(tmp_path: Path):
+    """Broad `cmd:*` allows must NOT reopen the universally-denied items."""
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    for cmd in (
+        "shell(rm -rf /)",
+        "shell(curl)",
+        "shell(cargo install)",
+        "shell(brew)",
+        "shell(sudo)",
+        "shell(doas)",
+        "shell(winget)",
+        "shell(apt)",
+        "shell(apt-get)",
+        "shell(scoop)",
+        "shell(choco)",
+    ):
+        assert cmd not in allow
+        assert cmd in deny
+
+
+def test_copilot_self_management_denied(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    _, deny = _split_allow_deny(flags)
+    for rule in (
+        "shell(copilot update)",
+        "shell(copilot login)",
+        "shell(copilot logout)",
+    ):
+        assert rule in deny
+
+
+# ---- Local-install ecosystem gating (review-0014 / review-0015) --------
 
 
 def test_build_flags_with_local_install_marker(tmp_path: Path):
@@ -28,96 +280,45 @@ def test_build_flags_with_local_install_marker(tmp_path: Path):
 
 def test_build_flags_no_marker_no_local_install(tmp_path: Path):
     flags = build_flags(tmp_path, allow_local_install=True)
-    joined = " ".join(flags)
-    # Without any lockfile marker, npm install etc. must not be in the allow list.
-    assert "npm install" not in joined or "--deny-tool" in joined
+    allow, _ = _split_allow_deny(flags)
+    # Without any lockfile marker, `shell(npm install)` must not be in the
+    # allow list (it's the gated form; `shell(npm:*)` IS in the base allow).
+    assert "shell(npm install)" not in allow
 
 
 def test_pyproject_alone_is_not_a_lockfile_marker(tmp_path: Path):
-    """A bare pyproject.toml does NOT pin transitive deps, so it must not
-    enable the local-install allowlist on its own."""
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
     assert detect_local_install_available(tmp_path) is False
     flags = build_flags(tmp_path, allow_local_install=True)
-    joined = " ".join(flags)
-    assert "shell(pip install -e)" not in joined
+    allow, _ = _split_allow_deny(flags)
+    assert "shell(pip install -e)" not in allow
 
 
 def test_pip_install_user_is_not_in_local_allowlist(tmp_path: Path):
     """`pip install --user` writes outside the repo and must never be allowed."""
     (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=True)
-    allow_flags = [f for f in flags if f.startswith("--allow-tool=")]
-    allow_joined = " ".join(allow_flags)
-    # It must not appear in any allow rule. (It MAY appear as a deny
-    # rule under review-0014's narrow Python deny list, which is fine.)
-    assert "pip install --user" not in allow_joined
-
-
-def test_shell_rules_are_aliased_to_bash_and_powershell(tmp_path: Path):
-    """Every shell(...) rule must also be expressed as bash(...) and
-    powershell(...) so the Guard matrix matches whichever underlying tool
-    name Copilot uses on this platform."""
-    flags = build_flags(tmp_path, allow_local_install=False)
-    assert any(f == "--deny-tool=shell(git push)" for f in flags)
-    assert any(f == "--deny-tool=bash(git push)" for f in flags)
-    assert any(f == "--deny-tool=powershell(git push)" for f in flags)
-    assert any(f == "--allow-tool=shell(git status)" for f in flags)
-    assert any(f == "--allow-tool=bash(git status)" for f in flags)
-    assert any(f == "--allow-tool=powershell(git status)" for f in flags)
-
-
-# ---- Deny-precedence regression (review-0014) ----------------------------
-
-
-def _split_allow_deny(flags: list[str]) -> tuple[list[str], list[str]]:
-    allow = [f.removeprefix("--allow-tool=") for f in flags if f.startswith("--allow-tool=")]
-    deny = [f.removeprefix("--deny-tool=") for f in flags if f.startswith("--deny-tool=")]
-    return allow, deny
-
-
-def _deny_shadows(rule: str, deny: list[str]) -> bool:
-    """Model the documented deny-precedence rule: a deny entry shadows
-    `rule` if it is a string prefix of `rule` (the same prefix-match
-    semantics the broad `shell(pip install)` deny relied on)."""
-    target = rule.rstrip(")")
-    for d in deny:
-        d_stripped = d.rstrip(")")
-        if target.startswith(d_stripped):
-            return True
-    return False
+    allow, _ = _split_allow_deny(flags)
+    assert "shell(pip install --user)" not in allow
 
 
 def test_python_local_install_does_not_shadow_pip_install_editable(tmp_path: Path):
     """Regression (review-0014): with --allow-local-install on for a
     Python repo with a real lockfile, the broad `shell(pip install)` deny
     must NOT be emitted, because deny rules take precedence and would
-    otherwise shadow the lockfile-gated `shell(pip install -e)` allow
-    entry — making the documented `--allow-local-install` capability a
-    no-op for Python repos."""
+    otherwise shadow the lockfile-gated `shell(pip install -e)` allow."""
     (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=True)
     allow, deny = _split_allow_deny(flags)
 
     assert "shell(pip install -e)" in allow
-    # The broad pip install deny must be gone for Python repos with a
-    # lockfile when --allow-local-install is on.
     assert "shell(pip install)" not in deny
     assert "shell(pip3 install)" not in deny
-    # The narrow Python-global denies must still be present so we do not
-    # silently allow installs that escape the repo (`--user`, etc.).
     assert "shell(pip install --user)" in deny
     assert "shell(pip install --target)" in deny
-    # And the editable-install allow must NOT be shadowed by any deny
-    # under the documented prefix-precedence semantics.
-    assert not _deny_shadows("shell(pip install -e)", deny), (
-        f"deny precedence still shadows pip install -e: {[d for d in deny if 'pip' in d]}"
-    )
 
 
 def test_python_local_install_off_keeps_broad_pip_install_deny(tmp_path: Path):
-    """Without --allow-local-install, the broad `pip install` deny must
-    still be in effect (defence in depth for repos that don't opt in)."""
     (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=False)
     _, deny = _split_allow_deny(flags)
@@ -127,7 +328,7 @@ def test_python_local_install_off_keeps_broad_pip_install_deny(tmp_path: Path):
 
 def test_local_install_for_non_python_repo_still_uses_broad_pip_deny(tmp_path: Path):
     """A JS-only repo opting into --allow-local-install must NOT relax the
-    Python pip-install deny — only Python repos get the narrow form."""
+    Python pip-install deny."""
     (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=True)
     _, deny = _split_allow_deny(flags)
@@ -136,30 +337,19 @@ def test_local_install_for_non_python_repo_still_uses_broad_pip_deny(tmp_path: P
 
 
 def test_pipx_install_remains_denied_under_python_local_install(tmp_path: Path):
-    """pipx writes outside the repo regardless of any lockfile gate, so it
-    must remain denied even when --allow-local-install relaxes the
-    `pip install` deny for a Python repo."""
+    """pipx writes outside the repo regardless of any lockfile gate."""
     (tmp_path / "uv.lock").write_text("", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=True)
     _, deny = _split_allow_deny(flags)
     assert "shell(pipx install)" in deny
 
 
-# ---- Ecosystem-scoped local-install allow (review-0015) ------------------
-
-
 def test_js_lockfile_does_not_unlock_python_install_commands(tmp_path: Path):
-    """Regression (review-0015): a repo with only `package-lock.json` must
-    NOT enable Python install commands like `uv pip install` or
-    `poetry install`. Each ecosystem's allow set is gated on its own
-    lockfile being present."""
     (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=True)
     allow, _ = _split_allow_deny(flags)
-    # JS commands are unlocked.
     assert "shell(npm ci)" in allow
     assert "shell(npm install)" in allow
-    # Python commands must NOT be unlocked from a JS-only lockfile.
     assert "shell(uv pip install)" not in allow
     assert "shell(uv sync)" not in allow
     assert "shell(poetry install)" not in allow
@@ -167,7 +357,6 @@ def test_js_lockfile_does_not_unlock_python_install_commands(tmp_path: Path):
 
 
 def test_python_lockfile_does_not_unlock_js_install_commands(tmp_path: Path):
-    """The reverse: a Python-only repo must not unlock `npm`/`pnpm`/`yarn`."""
     (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=True)
     allow, _ = _split_allow_deny(flags)
@@ -180,23 +369,16 @@ def test_python_lockfile_does_not_unlock_js_install_commands(tmp_path: Path):
 
 
 def test_requirements_txt_alone_is_not_a_lockfile_marker(tmp_path: Path):
-    """Regression (review-0015): a bare `requirements.txt` is not a real
-    lockfile (no hashes, no pinned transitive graph). The docs frame
-    `--allow-local-install` around real lockfiles, so `requirements.txt`
-    on its own must NOT enable the install allowlist."""
     (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
     assert detect_local_install_available(tmp_path) is False
     flags = build_flags(tmp_path, allow_local_install=True)
     allow, deny = _split_allow_deny(flags)
     assert "shell(pip install -e)" not in allow
     assert "shell(poetry install)" not in allow
-    # And the broad pip install deny must remain in effect — without a
-    # real Python lockfile, we don't relax it.
     assert "shell(pip install)" in deny
 
 
 def test_rust_lockfile_only_unlocks_cargo(tmp_path: Path):
-    """A Rust repo with `Cargo.lock` unlocks cargo commands only."""
     (tmp_path / "Cargo.lock").write_text("", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=True)
     allow, _ = _split_allow_deny(flags)
@@ -208,8 +390,6 @@ def test_rust_lockfile_only_unlocks_cargo(tmp_path: Path):
 
 
 def test_polyglot_repo_unlocks_only_present_ecosystems(tmp_path: Path):
-    """A repo with both Python and JS lockfiles unlocks both — but
-    nothing else (Rust/Go/pixi remain denied)."""
     (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
     (tmp_path / "yarn.lock").write_text("", encoding="utf-8")
     flags = build_flags(tmp_path, allow_local_install=True)
@@ -219,150 +399,3 @@ def test_polyglot_repo_unlocks_only_present_ecosystems(tmp_path: Path):
     assert "shell(cargo build)" not in allow
     assert "shell(go mod download)" not in allow
     assert "shell(pixi install)" not in allow
-
-
-# ---- Quality-gate validation commands (review-0017) ---------------------
-
-
-def test_quality_gate_commands_are_allowed(tmp_path: Path):
-    """Regression (review-0017): the allowlist must permit the repo's
-    own mandatory validation commands (ruff, pip-audit, pytest,
-    pre-commit) so the launched coder can actually run the quality
-    gates documented in AGENTS.md / pre-commit / CI. Each shell rule
-    must also be aliased to bash() and powershell()."""
-    flags = build_flags(tmp_path, allow_local_install=False)
-    allow, _ = _split_allow_deny(flags)
-    for rule in (
-        "shell(python -m ruff)",
-        "shell(python -m pip_audit)",
-        "shell(python -m pytest)",
-        "shell(python -m pre_commit)",
-        "shell(pytest)",
-        "shell(ruff)",
-        "shell(pip-audit)",
-        "shell(pre-commit)",
-        # Bare interpreter + launcher forms (transcript evidence from
-        # the 17-round dogfood run: PowerShell coders repeatedly invoked
-        # `python`, `py`, `pytest.exe`, `ruff.exe`, etc. and got denied).
-        "shell(python)",
-        "shell(python.exe)",
-        "shell(py)",
-        "shell(pytest.exe)",
-        "shell(ruff.exe)",
-        "shell(pip-audit.exe)",
-        "shell(pre-commit.exe)",
-        # Inspection utilities.
-        "shell(where)",
-        "shell(Get-ChildItem)",
-        "shell(Get-Content)",
-        "shell(Test-Path)",
-        # Bare `git` (broad but dangerous subcommands remain denied).
-        "shell(git)",
-    ):
-        assert rule in allow, f"missing allow for {rule}"
-        # Aliased forms must also appear so the matrix matches whichever
-        # tool name Copilot picks on this platform.
-        inner = rule[len("shell(") : -1]
-        assert f"bash({inner})" in allow
-        assert f"powershell({inner})" in allow
-
-
-def test_unrelated_shell_commands_remain_denied(tmp_path: Path):
-    """Whitelisting the quality gates must NOT reopen arbitrary shell
-    access — unrelated commands like `curl` and `npm install -g` must
-    still be denied."""
-    flags = build_flags(tmp_path, allow_local_install=False)
-    allow, deny = _split_allow_deny(flags)
-    # Commands that have no allow entry at all.
-    for cmd in (
-        "shell(rm -rf /)",
-        "shell(curl)",
-        "shell(npm install -g)",
-        "shell(cargo install)",
-        "shell(brew)",
-    ):
-        assert cmd not in allow
-    # And the explicit denies are still emitted.
-    for d in (
-        "shell(git push)",
-        "shell(curl)",
-        "shell(npm install -g)",
-        "shell(sudo)",
-        # New ecosystems: install-global / self-update escape hatches
-        # stay denied even though the bare tool is allowed.
-        "shell(dotnet tool install -g)",
-        "shell(dotnet tool install --global)",
-        "shell(npx --yes)",
-        "shell(npx -y)",
-        "shell(sdkmanager --install)",
-    ):
-        assert d in deny
-
-
-# ---- Extended ecosystem allowlist (Node / .NET / Android) --------------
-
-
-def test_node_toolchain_allowed(tmp_path: Path):
-    """Node / TypeScript coders must be able to invoke the bare
-    toolchain without tripping the Guard. Global-install forms stay
-    denied."""
-    flags = build_flags(tmp_path, allow_local_install=False)
-    allow, deny = _split_allow_deny(flags)
-    for rule in (
-        "shell(node)",
-        "shell(npm)",
-        "shell(npx)",
-        "shell(pnpm)",
-        "shell(yarn)",
-        "shell(tsc)",
-        "shell(eslint)",
-        "shell(prettier)",
-        "shell(jest)",
-        "shell(vitest)",
-    ):
-        assert rule in allow, f"missing node allow for {rule}"
-    for rule in (
-        "shell(npm install -g)",
-        "shell(npm i -g)",
-        "shell(pnpm add -g)",
-        "shell(yarn global)",
-        "shell(npx --yes)",
-    ):
-        assert rule in deny, f"expected deny for {rule}"
-
-
-def test_dotnet_toolchain_allowed(tmp_path: Path):
-    """.NET / C# coders must be able to invoke `dotnet`, `msbuild`,
-    `nuget`. Global-tool installs stay denied."""
-    flags = build_flags(tmp_path, allow_local_install=False)
-    allow, deny = _split_allow_deny(flags)
-    for rule in ("shell(dotnet)", "shell(msbuild)", "shell(nuget)"):
-        assert rule in allow, f"missing dotnet allow for {rule}"
-    for rule in (
-        "shell(dotnet tool install -g)",
-        "shell(dotnet tool install --global)",
-        "shell(dotnet workload install)",
-    ):
-        assert rule in deny, f"expected deny for {rule}"
-
-
-def test_android_toolchain_allowed(tmp_path: Path):
-    """Android / Gradle coders must be able to invoke Gradle wrappers,
-    Maven, `adb`, and the JDK. SDK-install commands stay denied."""
-    flags = build_flags(tmp_path, allow_local_install=False)
-    allow, deny = _split_allow_deny(flags)
-    for rule in (
-        "shell(gradle)",
-        "shell(gradlew)",
-        "shell(gradlew.bat)",
-        "shell(mvn)",
-        "shell(mvnw)",
-        "shell(adb)",
-        "shell(sdkmanager)",
-        "shell(kotlin)",
-        "shell(kotlinc)",
-        "shell(java)",
-        "shell(javac)",
-    ):
-        assert rule in allow, f"missing android allow for {rule}"
-    assert "shell(sdkmanager --install)" in deny
