@@ -66,3 +66,20 @@ orchestrator may answer from policy automatically, or escalate to a human who
 could be asleep. Keep questions short, self-contained, and rare.
 
 <!-- AIDOR:MANAGED-BLOCK-END -->
+
+## Scope of the lockfile rule (clarification, review-0001)
+
+The "project-local installs allowed only when a lockfile already exists"
+guard in the managed block above governs **package installs that aidor
+itself triggers at runtime** while driving a *target* repository — e.g.
+a coder agent deciding to run `npm ci` or `poetry install` as part of a
+fix round against a downstream project. aidor refuses such installs
+unless the target repo already ships a lockfile, so agents cannot
+silently reshape a downstream project's dependency graph.
+
+The aidor repository's own bootstrap (`python -m pip install -e ".[dev]"`
+in `README.md`, `GETTING_STARTED.md`, and `.github/workflows/ci.yml`) is
+**not** a runtime agent install — it is human- or CI-initiated project
+setup for this Python package. Direct dependencies are pinned to minimum
+compatible versions in `pyproject.toml`; supply-chain drift is caught by
+the mandatory `pip-audit` step in the pre-commit gate and CI.
