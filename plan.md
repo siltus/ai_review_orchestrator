@@ -320,7 +320,7 @@ Path sandbox:
 
 ### 9.2 Hook script (`.github/hooks/aidor.json`)
 
-Covers patterns the flag matrix cannot express (path containment checks, environment checks, stronger shell-line parsing). A single cross-platform script (`scripts/aidor_guard.{sh,ps1}`) receives the JSON payload from `preToolUse` / `permissionRequest` and returns `{"permissionDecision":"deny","permissionDecisionReason":"..."}` on violation. Responsibilities:
+Covers patterns the flag matrix cannot express (path containment checks, environment checks, stronger shell-line parsing). `bootstrap.py` writes `.github/hooks/aidor.json` whose entries invoke `python -m aidor.hook_resolver` (see `src/aidor/hook_resolver.py`); the resolver receives the JSON payload from `preToolUse` / `permissionRequest` on stdin and returns `{"permissionDecision":"deny","permissionDecisionReason":"..."}` on violation. Responsibilities:
 
 - Re-check that any `write`/`edit`/`create` target resolves under the canonical repo root (symlink-safe).
 - Veto shell commands whose fully expanded argv escapes repo bounds (e.g., `cp file /etc/...`).
@@ -340,15 +340,17 @@ The coder legitimately needs to ask the human in a few well-defined cases (e.g.,
 
 1. **Policy lookup.** Classify the question using short regex/keyword rules from `.aidor/allowed_exceptions.yml` and a small shipped `question_classes.yml` (lint-exception request, missing-spec clarification, permission-to-read-outside-repo, tool-not-installed, etc.). If the class has a deterministic answer (e.g., "lint-exception for rule X in context Y is pre-approved"), the hook synthesizes the answer and returns.
 2. **State-derived answer.** If the question is about a previous review ("which file from review-0002 did you mean?"), the hook reads `.aidor/state.json` + review store and can answer mechanically.
-3. **Human escalation — unbounded wait.** Otherwise the hook prints a bright `[aidor:human]` prompt on the console with the question and a short menu of suggested answers, and **waits indefinitely**. The human may answer immediately, in an hour, or the next morning — the watchdog is paused (§8) and the round-timeout clock excludes this interval. In v1.1 the same prompt is mirrored to Telegram, with a configurable **re-ping cadence** (default every 30 min) until answered, so the notification isn't forgotten on a silenced phone. There is no auto-timeout default.
-4. **Cancellation.** The only way the wait ends without an answer is if the human explicitly cancels the run (Ctrl+C in the orchestrator terminal, or an `aidor abort <repo>` command from a second terminal). On cancel, the hook returns `deny` with a "run aborted by human" reason and the orchestrator shuts down cleanly.
+3. **Human escalation — bounded by the hook timeout.** Otherwise the hook writes a pending request under `.aidor/pending/<uuid>.json` and waits for the orchestrator to drop a `<uuid>.answer` (or a `<uuid>.cancel` / global `.aidor/ABORT`). The watchdog is paused (§8) and the round-timeout clock excludes this interval. The wait is capped only by the Copilot hook-process timeout, currently configured to **24 hours** in `.github/hooks/aidor.json`; in practice the human may answer immediately, in an hour, or the next morning. In v1.1 the same prompt is mirrored to Telegram, with a configurable **re-ping cadence** (default every 30 min) until answered, so the notification isn't forgotten on a silenced phone.
+4. **Cancellation.** The wait can also end if the human cancels the question (Ctrl-C at the orchestrator's prompt, or an `aidor abort <repo>` command from a second terminal which writes `.aidor/ABORT`). On a per-question cancel the hook returns `deny` with a "question cancelled by human; proceed with a safe default" reason and the agent is expected to choose a safe fallback — the round continues. On a global abort (`aidor abort` / `.aidor/ABORT`) the phase watchdog terminates the Copilot subprocess and the orchestrator shuts down cleanly. (v0.1: `aidor abort` flips `state.json` to `aborted` and the watchdog reacts within ~1 s.)
 5. **Audit.** Every Q&A pair is appended to `.aidor/logs/qa.jsonl` (timestamp, class, question, answer, wait duration, source=policy|state|human|cancelled).
 
 **Hook wiring:**
 
 - `preToolUse` matcher `^ask_user$` is the primary entry point; the hook outputs `modifiedArgs` to inject the synthesized answer, or `permissionDecision: deny` with `permissionDecisionReason` carrying the answer text (the LLM reads this).
 - `notification` matcher `^elicitation_dialog$` is a belt-and-suspenders path for flows where Copilot elicits outside a tool call; it returns `additionalContext` with the resolved answer.
-- Both run the same Python resolver (`scripts/aidor_hook.py`) for consistency; the hook JSON just points at it.
+- Both run the same Python resolver (`python -m aidor.hook_resolver`, implemented in `src/aidor/hook_resolver.py`) for consistency; the hook JSON just points at it.
+
+> **v0.1 status:** step 1 (policy lookup) is implemented against `src/aidor/policies/question_classes.yml`; step 2 (state-derived answers) is scaffolded as `_lookup_state_answer()` and currently always returns `None`, so every non-policy question escalates straight to the human. `GETTING_STARTED.md` must reflect this until state lookup gains real rules.
 
 This keeps interactivity intact for genuine clarifications while guaranteeing the subprocess never hangs waiting on a forgotten TTY — and without ever forcing the human to answer on a schedule.
 
@@ -368,7 +370,7 @@ aidor run --coder <model> --reviewer <model> --repo <path>
 aidor status  <repo>    # show current state.json + last review
 aidor summary <repo>    # render summary table for completed run
 aidor clean   <repo>    # wipe .aidor/ (keeps AGENTS.md + .github/agents/*)
-aidor doctor  <repo>    # verify copilot binary, auth, model strings, hooks syntax
+aidor doctor  <repo>    # verify python version, copilot binary + --version, repo path, wake-lock availability
 ```
 
 Example matching `reqs.md`:
@@ -377,7 +379,7 @@ Example matching `reqs.md`:
 aidor run --coder opus4.7 --reviewer gpt5 --repo d:\src\somerepo
 ```
 
-Model strings are passed verbatim to Copilot CLI (`--model=...`). `aidor doctor` queries `copilot /model` to validate strings before starting a run; documented in `QUICKSTART.md`.
+Model strings are passed verbatim to Copilot CLI (`--model=...`); validation against `copilot /model` is not implemented in v0.1 — invalid strings surface as the first round's launch failure. Documented in `GETTING_STARTED.md`.
 
 ---
 
@@ -395,49 +397,59 @@ Model strings are passed verbatim to Copilot CLI (`--model=...`). `aidor doctor`
 
 ## 12. Module layout
 
+Actual v0.1 layout (keep in sync with `src/aidor/` + `tests/`):
+
 ```
-aidor/
+src/aidor/
   __main__.py
   cli.py                 # typer app (run/status/summary/clean/doctor)
   orchestrator.py        # state machine, main loop
-  phase.py               # single Copilot invocation: build argv, stream JSONL, parse
+  phase.py               # single Copilot invocation: build argv, stream JSONL,
+                         # parse; also owns idle / round-timeout watchdog and
+                         # SIGTERM + --continue restart policy
   bootstrap.py           # idempotent write of AGENTS.md block, agents/, hooks/
   review_store.py        # file numbering, footer parser, diff between rounds
   state.py               # state.json load/save, resume
-  watchdog.py            # idle / round-timeout, SIGTERM + --continue policy
+  hook_resolver.py       # Copilot hook entry point: policy → state → human
+                         # (`python -m aidor.hook_resolver`)
+  guard_profile.py       # build --allow-tool/--deny-tool flag lists + hook JSON
   telemetry.py           # parse Copilot OTel JSONL
   summary.py             # aggregate + render final table, write summary.md
-  guard_profile.py       # build --allow-tool/--deny-tool flag lists + hook JSON
+  wake_lock.py           # cross-platform wake lock (keep-alive)
+  config.py
   policies/
     allowed_exceptions.yml
-    guard_baseline.yml   # source of truth for §9 flag matrix
+    question_classes.yml # source of truth for policy-answered ask_user classes
   agent_templates/
     aidor-coder.md
     aidor-reviewer.md
     agents_md_block.md   # the managed AGENTS.md section
-    aidor_guard.sh
-    aidor_guard.ps1
-    hooks.json
-  notify/
-    telegram.py          # v1.1
-  config.py
+  # (hook JSON and guard flag matrix are generated in-code from
+  #  `bootstrap.py` + `guard_profile.py`, not shipped as separate template
+  #  files.)
+  # notify/telegram.py — deferred to v1.1, not present yet.
 
 tests/
+  conftest.py
+  fake_copilot.py                 # PATH-shimmable script emitting scripted JSONL
   test_bootstrap.py
+  test_cli.py
   test_guard_profile.py
+  test_hook_resolver.py
+  test_orchestrator_integration.py
+  test_orchestrator_prompt.py
+  test_phase_watchdog.py
   test_review_store.py
-  test_state_machine.py
-  test_watchdog.py
+  test_state.py
+  test_summary.py
   test_telemetry.py
-  integration/
-    fake_copilot.py      # PATH-shimmable script emitting scripted JSONL
-    test_full_loop.py
+  test_wake_lock.py
 
-scripts/
-  spike_copilot.py       # M0 deliverable
 pyproject.toml
 README.md
-QUICKSTART.md
+GETTING_STARTED.md
+ARCHITECTURE.md
+AGENTS.md
 plan.md
 reqs.md
 ```
@@ -446,10 +458,10 @@ reqs.md
 
 ## 13. Copilot CLI spike (M0)
 
-Narrower than before — most questions are answered from docs. Spike (`scripts/spike_copilot.py`) now just **verifies empirically**:
+Narrower than before — most questions are answered from docs. The spike was a historical M0 deliverable (no `scripts/spike_copilot.py` ships in v0.1); its checklist is preserved here for traceability and is now covered by `aidor doctor` plus the fake-copilot test harness. The items verified empirically were:
 
 1. `copilot` binary is on PATH and authenticated (`copilot /user show`).
-2. `copilot /model` lists the exact model strings we'll pass (record the list for `QUICKSTART.md` and `aidor doctor`).
+2. `copilot /model` lists the exact model strings we'll pass (record the list for `GETTING_STARTED.md` and `aidor doctor`).
 3. `copilot -p "say hi" --autopilot --output-format=json --no-ask-user` exits cleanly and produces parseable JSONL with a final `stopReason: "end_turn"`.
 4. A minimal `.github/agents/aidor-test.md` is picked up via `--agent=aidor-test`.
 5. A minimal `.github/hooks/aidor.json` `preToolUse` hook can deny a tool call and the reason reaches the LLM.
@@ -457,7 +469,7 @@ Narrower than before — most questions are answered from docs. Spike (`scripts/
 7. `COPILOT_OTEL_FILE_EXPORTER_PATH=trace.jsonl` produces JSONL with the token/cost attributes we need.
 8. `--continue` successfully resumes the prior session after SIGTERM.
 
-Output of the spike → pins `phase.py` argv template + `QUICKSTART.md`.
+Output of the spike → pins `phase.py` argv template + `GETTING_STARTED.md`.
 
 ---
 
@@ -466,17 +478,17 @@ Output of the spike → pins `phase.py` argv template + `QUICKSTART.md`.
 (Updated: M7 now includes the question resolver; M8 picks up the long-session durability work.)
 
 
-1. **M0 Spike** — Copilot CLI verification (§13), document findings in `QUICKSTART.md`.
+1. **M0 Spike** — Copilot CLI verification (§13), document findings in `GETTING_STARTED.md`.
 2. **M1 Skeleton** — `typer` CLI, config, logging, `.aidor/` bootstrap, `state.json`, `aidor doctor`.
 3. **M2 Bootstrap writer** — idempotent generation of `AGENTS.md` block, `.github/agents/aidor-{coder,reviewer}.md`, `.github/hooks/aidor.json`, guard scripts.
 4. **M3 Phase runner** — `phase.py`: build argv from `guard_profile` + flags, spawn, stream JSONL, capture transcript/OTel, detect `end_turn`.
 5. **M4 One round** — reviewer phase → writes review file → coder phase → writes fixes file. Parse footer.
 6. **M5 Multi-round loop** — convergence rule (§7.1), readiness-gate round, `--max-rounds`, `--resume` via `--continue`.
 7. **M6 Watchdog** — idle + round timeouts, restart policy, hook-fed breadcrumbs.
-8. **M7 Guard + question resolver** — path-containment hook, linter allowed-exceptions loader, `--allow-local-install` lockfile gating, **`ask_user` interception pipeline (policy → state → human → timeout) with `qa.jsonl` audit**.
+8. **M7 Guard + question resolver** — path-containment hook, linter allowed-exceptions loader, `--allow-local-install` lockfile gating, **`ask_user` interception pipeline (policy → state → human → cancel/hook-timeout) with `qa.jsonl` audit**.
 9. **M8 Long-session durability** — wake-lock, `--continue` retry policy with back-off, OTel JSONL rotation, artifact pruning, `aidor status` live view, stderr draining, hook-bounded idle detection.
 10. **M9 Summary** — OTel parsing + final table + `summary.md`.
-11. **M10 Tests & docs** — fake-copilot integration harness (including scripted `ask_user` + mid-round SIGTERM + `--continue`), unit tests, polish `README.md` / `QUICKSTART.md`.
+11. **M10 Tests & docs** — fake-copilot integration harness (including scripted `ask_user` + mid-round SIGTERM + `--continue`), unit tests, polish `README.md` / `GETTING_STARTED.md`.
 12. **M11 (v1.1)** — Telegram notifier, `--web-status`, persistent permission hints, optional ACP-based long-lived sessions.
 
 ---
@@ -505,7 +517,7 @@ Rounds can legitimately run **hours** (per `reqs.md` and confirmed user expectat
 ### 17.2 Authentication / token refresh
 
 - Copilot CLI manages its own OAuth token via `~/.copilot` (or `COPILOT_HOME`); long sessions renew transparently.
-- `aidor doctor` checks auth before kickoff (`copilot /user show`), so we fail fast instead of 2 h in.
+- v1.1: `aidor doctor` will check auth before kickoff (`copilot /user show`) so we fail fast instead of 2 h in. v0.1's `doctor` only verifies the `copilot` binary is on PATH and reports `--version`.
 - If the session errors out with auth (`errorOccurred` hook → `error_context: system` + auth keywords), we DO NOT silently retry — we escalate immediately (re-auth requires the human).
 
 ### 17.3 Subprocess I/O
@@ -563,7 +575,7 @@ Rounds can legitimately run **hours** (per `reqs.md` and confirmed user expectat
   - Language: **Python 3.11+**.
   - Max rounds: **10** (hard cap). Typical expected: 5–6 + readiness gate.
   - Convergence requires reviewer to explicitly confirm `PRODUCTION_READY=true` once no critical/major remain (dedicated readiness-gate round).
-  - Model strings: pass through verbatim to Copilot CLI; documented in `QUICKSTART.md`.
+  - Model strings: pass through verbatim to Copilot CLI; documented in `GETTING_STARTED.md`.
   - Telegram: deferred to v1.1; v1 escalates by loud console banner + non-zero exit.
   - Roles: coder and reviewer each get a distinct persona; neither is told the counterpart is an LLM.
   - Code baseline (supply-chain, ≥90% coverage, regression test per bugfix, linters, docs, AGENTS.md) mandatory.
@@ -571,10 +583,10 @@ Rounds can legitimately run **hours** (per `reqs.md` and confirmed user expectat
 - **2026-04-21 (b) — round timeout**
   - `--round-timeout` default raised from 30 min → **3 h (10 800 s)** to accommodate long early rounds on buggy repos.
 
-- **2026-04-21 (d) — interactivity preserved; human wait is unbounded**
+- **2026-04-21 (d) — interactivity preserved; human wait bounded only by the hook timeout**
   - Do NOT pass `--no-ask-user`. The `ask_user` tool stays enabled so the coder can ask clarifying questions (e.g., lint-exception approval).
-  - All questions are intercepted by our hook resolver (`preToolUse` on `ask_user` + `notification` on `elicitation_dialog`) which (1) consults policy, (2) consults state, (3) escalates to human **with no timeout** — the human may be asleep or away for hours, and the watchdog + round-timeout are paused during that wait. The only way the wait ends without an answer is an explicit `aidor abort` / Ctrl+C cancel.
-  - There is **no `--human-response-timeout`** and no auto-default answer. In v1.1 Telegram notifications get a configurable re-ping cadence (default every 30 min) so a silenced phone doesn't lose the prompt.
+  - All questions are intercepted by our hook resolver (`preToolUse` on `ask_user` + `notification` on `elicitation_dialog`) which (1) consults policy, (2) consults state, (3) escalates to human — the human may be asleep or away for hours, and the watchdog + round-timeout are paused during that wait. The wait ends when the human answers, when the human cancels the question (Ctrl-C → `.aidor/pending/<uuid>.cancel`, the agent then proceeds with a safe default; the run is NOT aborted), when the run is globally aborted (`aidor abort` writes `.aidor/ABORT` → watchdog kills the subprocess), or when the Copilot hook-process timeout fires (currently configured to **24 h** in `.github/hooks/aidor.json`).
+  - There is **no `--human-response-timeout`** in aidor itself and no auto-default answer beyond the hook-process cap. In v1.1 Telegram notifications get a configurable re-ping cadence (default every 30 min) so a silenced phone doesn't lose the prompt.
   - Every Q&A is recorded in `.aidor/logs/qa.jsonl` with wait duration. See §9.4.
   - The Copilot subprocess never blocks on a real TTY — our hook process is the one that waits, so the watchdog can distinguish "agent hung" from "agent waiting for human".
 

@@ -220,3 +220,10 @@ The repo runs three gates in pre-commit and CI:
 
 See [.pre-commit-config.yaml](.pre-commit-config.yaml) and
 [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+The CI workflow can be administratively disabled from the GitHub Actions UI
+("Disable workflow"); when that happens the gates above stop running on
+push/PR even though the workflow file itself is unchanged. The pre-commit
+hooks remain active locally and continue to enforce the same baseline. See
+the operator note in [GETTING_STARTED.md](GETTING_STARTED.md#quality-gates-this-repo)
+for the recovery procedure.

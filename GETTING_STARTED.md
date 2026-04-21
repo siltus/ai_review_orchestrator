@@ -91,9 +91,10 @@ While running:
 - Live status & per-phase events scroll on the terminal.
 - `Ctrl-C` writes the abort marker and shuts down cleanly.
 - If the coder calls `ask_user`, the orchestrator first tries to answer
-  from policy (`question_classes.yml`) or state. Only when those fail does
-  it prompt your TTY. The phase watchdog is paused for the duration of
-  the human wait.
+  from policy (`question_classes.yml`). In v0.1 the state-derived answer
+  step (§9.4 step 2 of `plan.md`) is scaffolding only — it always falls
+  through, so any non-policy question is escalated to your TTY. The phase
+  watchdog is paused for the duration of the human wait.
 
 ## Inspecting a run
 
@@ -137,6 +138,13 @@ The aidor repo dogfoods its own quality bar — pre-commit and CI run:
 1. `ruff check` + `ruff format --check`
 2. `pip-audit --skip-editable`
 3. `pytest`
+
+> **Operator note:** the GitHub Actions `ci` workflow can be administratively
+> disabled (Repository → Settings → Actions → Workflows → `ci` → "Disable
+> workflow"). When that happens the gates above stop running on push/PR even
+> though `.github/workflows/ci.yml` and `.pre-commit-config.yaml` are still
+> wired up. After re-enabling the workflow, run `ruff format src tests`
+> locally once to clear any drift introduced while CI was off, then push.
 
 To enable locally:
 
