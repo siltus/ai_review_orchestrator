@@ -410,16 +410,15 @@ def test_shell_escape_blocks_relative_traversal_behind_benign_prefix(tmp_path: P
     assert decision["permissionDecision"] == "deny"
 
 
-# ---- shell deny rules (enforced by _check_shell_deny_rules) -------------
+# ---- shell allowlist (enforced by _check_shell_allowlist) ---------------
 #
-# These rules are what used to live in the `--deny-tool=...` flag matrix.
-# They moved into the hook in the rewrite documented in the
-# `guard_profile.py` module docstring, because the flag grammar can't
-# express multi-token subcommands for anything other than `git`/`gh`.
+# The hook denies any clause whose (exe, joined-args) does NOT match a
+# rule in `aidor/policies/shell_allowlist.yml` (defaults) plus optional
+# `<repo>/.aidor/shell_allowlist.yml` (user extensions).
 
 
 def _deny_decision(repo: Path, command: str, *, env: dict[str, str] | None = None):
-    from aidor.hook_resolver import _check_shell_deny_rules
+    from aidor.hook_resolver import _check_shell_allowlist
 
     old_env = {}
     if env is not None:
@@ -429,7 +428,7 @@ def _deny_decision(repo: Path, command: str, *, env: dict[str, str] | None = Non
             old_env[k] = _os.environ.get(k)
             _os.environ[k] = v
     try:
-        return _check_shell_deny_rules({"cwd": str(repo)}, {"command": command})
+        return _check_shell_allowlist({"cwd": str(repo)}, {"command": command})
     finally:
         if env is not None:
             import os as _os
@@ -444,7 +443,7 @@ def _deny_decision(repo: Path, command: str, *, env: dict[str, str] | None = Non
 def test_deny_git_push(tmp_path: Path):
     decision = _deny_decision(tmp_path, "git push origin master")
     assert decision is not None
-    assert "git push" in decision["permissionDecisionReason"]
+    assert "allowlist" in decision["permissionDecisionReason"]
 
 
 def test_allow_git_log(tmp_path: Path):
@@ -452,18 +451,16 @@ def test_allow_git_log(tmp_path: Path):
 
 
 def test_deny_git_config_global(tmp_path: Path):
+    # `git config` is not in the default allowlist at all, so any form
+    # of it is denied. Users who really need local-only `git config` can
+    # extend `.aidor/shell_allowlist.yml`.
     decision = _deny_decision(tmp_path, "git config --global user.name foo")
     assert decision is not None
-    assert "--global" in decision["permissionDecisionReason"]
 
 
 def test_deny_git_config_system(tmp_path: Path):
     decision = _deny_decision(tmp_path, "git config --system core.autocrlf true")
     assert decision is not None
-
-
-def test_allow_git_config_local(tmp_path: Path):
-    assert _deny_decision(tmp_path, "git config user.name foo") is None
 
 
 def test_deny_sudo(tmp_path: Path):
@@ -501,7 +498,7 @@ def test_deny_pipx(tmp_path: Path):
 def test_deny_npm_install_global_short(tmp_path: Path):
     decision = _deny_decision(tmp_path, "npm install -g typescript")
     assert decision is not None
-    assert "npm install -g" in decision["permissionDecisionReason"]
+    assert "allowlist" in decision["permissionDecisionReason"]
 
 
 def test_deny_npm_i_global(tmp_path: Path):
@@ -512,11 +509,11 @@ def test_deny_npm_install_global_long(tmp_path: Path):
     assert _deny_decision(tmp_path, "npm install --global typescript") is not None
 
 
-def test_allow_npm_install_local_without_gate(tmp_path: Path):
-    # No lockfile, no env — bare `npm install` is not on the deny list;
-    # the hook allows it (policy: we only DENY; absence of deny = allow).
-    # The local-install lockfile gate is only applied to pip/pip3.
-    assert _deny_decision(tmp_path, "npm install lodash") is None
+def test_deny_npm_install_local(tmp_path: Path):
+    # `npm` is NOT in the default allowlist; bare `npm install` is denied.
+    # Users who need npm in their target repo can opt in via
+    # `.aidor/shell_allowlist.yml`.
+    assert _deny_decision(tmp_path, "npm install lodash") is not None
 
 
 def test_deny_pnpm_add_global(tmp_path: Path):
@@ -561,7 +558,7 @@ def test_deny_copilot_self_management(tmp_path: Path):
 def test_deny_aidor_run_recursion(tmp_path: Path):
     decision = _deny_decision(tmp_path, "aidor run")
     assert decision is not None
-    assert "nested orchestrator" in decision["permissionDecisionReason"]
+    assert "allowlist" in decision["permissionDecisionReason"]
 
 
 def test_allow_aidor_doctor(tmp_path: Path):
@@ -674,7 +671,7 @@ def test_deny_applies_to_later_clause_in_chain(tmp_path: Path):
     """`cd <repo>; npm install -g foo` must be denied on the second clause."""
     decision = _deny_decision(tmp_path, "cd /tmp; npm install -g typescript")
     assert decision is not None
-    assert "npm install -g" in decision["permissionDecisionReason"]
+    assert "allowlist" in decision["permissionDecisionReason"]
 
 
 def test_normalises_python_dot_exe_from_venv(tmp_path: Path):
@@ -807,3 +804,57 @@ def test_pre_tool_use_runs_shell_escape_for_generic_shell_tool_string_args(tmp_p
     decision = _on_pre_tool_use("preToolUse", payload)
     assert decision is not None
     assert decision["permissionDecision"] == "deny"
+
+
+# ---- allowlist positive smoke tests + YAML extension --------------------
+
+
+def test_allow_ruff_check(tmp_path: Path):
+    assert _deny_decision(tmp_path, "ruff check src tests") is None
+
+
+def test_allow_pytest(tmp_path: Path):
+    assert _deny_decision(tmp_path, "pytest -q") is None
+
+
+def test_allow_pip_audit(tmp_path: Path):
+    assert _deny_decision(tmp_path, "pip-audit") is None
+
+
+def test_allow_powershell_pipeline(tmp_path: Path):
+    """The exact false-positive pattern from the dogfood run that broke
+    when we shipped a deny-only policy: a Get-ChildItem | ForEach-Object
+    pipeline with PowerShell expansion syntax inside the script block."""
+    cmd = (
+        r"Get-ChildItem src\aidor\*.py | "
+        r'ForEach-Object { "$(.Name)	$((Get-Content $_.FullName | Measure-Object -Line).Lines)" }'
+    )
+    assert _deny_decision(tmp_path, cmd) is None
+
+
+def test_user_yaml_extends_default_allowlist(tmp_path: Path):
+    """A .aidor/shell_allowlist.yml extension must add to (not replace)
+    the bundled defaults."""
+    (tmp_path / ".aidor").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".aidor" / "shell_allowlist.yml").write_text(
+        "rules:\n  - { exe: docker, args_regex: '^ps( .*)?$' }\n",
+        encoding="utf-8",
+    )
+    # User-extended rule allows docker ps.
+    assert _deny_decision(tmp_path, "docker ps") is None
+    # Defaults still in force: git push still denied.
+    assert _deny_decision(tmp_path, "git push origin main") is not None
+    # Outside the user regex: docker run still denied.
+    assert _deny_decision(tmp_path, "docker run alpine") is not None
+
+
+def test_user_yaml_with_malformed_regex_is_ignored(tmp_path: Path):
+    """Malformed entries are dropped silently rather than crashing the
+    hook (which would block the whole tool call)."""
+    (tmp_path / ".aidor").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".aidor" / "shell_allowlist.yml").write_text(
+        "rules:\n  - { exe: foo, args_regex: '[invalid' }\n",
+        encoding="utf-8",
+    )
+    # Bundled defaults still apply.
+    assert _deny_decision(tmp_path, "ruff check") is None

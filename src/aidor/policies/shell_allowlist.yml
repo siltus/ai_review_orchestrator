@@ -1,0 +1,181 @@
+# aidor default shell allowlist
+# ----------------------------------------------------------------------
+# Loaded by `hook_resolver._check_shell_allowlist` for the Copilot tools
+# `bash`, `powershell`, `shell`, and `run_in_terminal`.
+#
+# Semantics:
+#   * The shell command is split into clauses on `;`, `&&`, `||`, `|`, `&`
+#     (quote/paren/brace-aware — see `_split_shell_statements`).
+#   * For each clause the first token is normalised to its bare executable
+#     name, lowercased (`.\.venv\Scripts\python.exe` -> `python`).
+#   * The remaining tokens are joined with a single space; if `args_regex`
+#     matches that string the clause is allowed.
+#   * If ANY clause has no matching rule, the whole shell call is denied.
+#   * After allowlist matching, the path-containment check still runs, so
+#     even allowlisted cmdlets cannot reach files outside the repo root.
+#
+# Special-cases handled in code (NOT in this file):
+#   * `pip install ...` requires a Python lockfile AND
+#     `AIDOR_ALLOW_LOCAL_INSTALL=1`. Other `pip` subcommands are listed
+#     normally below.
+#   * Path containment (`_check_shell_escape`) is enforced regardless of
+#     allowlist match.
+#
+# Users may add additional rules in `.aidor/shell_allowlist.yml` at the
+# repo root; entries from both files are concatenated (defaults are not
+# removed).
+
+rules:
+  # ---- Quality gates ----------------------------------------------------
+  - { exe: ruff,        args_regex: '.*' }
+  - { exe: pytest,      args_regex: '.*' }
+  - { exe: mypy,        args_regex: '.*' }
+  - { exe: pyright,     args_regex: '.*' }
+  - { exe: coverage,    args_regex: '.*' }
+  - { exe: pip-audit,   args_regex: '.*' }
+  - { exe: pysentry,    args_regex: '.*' }
+  - { exe: pre-commit,  args_regex: '^(run|install|uninstall|--version|--help)( .*)?$' }
+
+  # ---- Python -----------------------------------------------------------
+  # `python -m <module>` is allowed only for a curated set of modules.
+  # `python <script.py>` is also allowed (path-containment check applies).
+  - { exe: python,  args_regex: '^-m\s+(pytest|ruff|mypy|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
+  - { exe: python,  args_regex: '^(?!-m\b).*' }
+  - { exe: python3, args_regex: '^-m\s+(pytest|ruff|mypy|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
+  - { exe: python3, args_regex: '^(?!-m\b).*' }
+  - { exe: py,      args_regex: '^-\d(\.\d+)?\s+-m\s+(pytest|ruff|mypy|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
+  - { exe: py,      args_regex: '^-m\s+(pytest|ruff|mypy|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
+
+  # `pip` non-install subcommands. `pip install` is handled in code.
+  - { exe: pip,  args_regex: '^(list|show|freeze|check|index|debug|cache|--version|--help)( .*)?$' }
+  - { exe: pip3, args_regex: '^(list|show|freeze|check|index|debug|cache|--version|--help)( .*)?$' }
+
+  # ---- Git --------------------------------------------------------------
+  # Read-only inspection (deliberately excludes `config`, `remote`,
+  # `tag`, `fetch` — those can mutate auth/remote state or interact
+  # with the network; users who need them can opt in via the per-repo
+  # `.aidor/shell_allowlist.yml` extension).
+  - { exe: git, args_regex: '^(status|log|diff|show|branch|rev-parse|ls-files|ls-tree|cat-file|describe|reflog|blame|grep|symbolic-ref|for-each-ref|name-rev|shortlog|whatchanged)( .*)?$' }
+  # Local-write subset (no push/remote-write).
+  - { exe: git, args_regex: '^(add|commit|stash|checkout|reset|restore|switch|mv|rm|merge|rebase|cherry-pick|revert|clean|init|update-index|notes|worktree)( .*)?$' }
+
+  # ---- Copilot CLI introspection ---------------------------------------
+  - { exe: copilot, args_regex: '^(--version|--help|help|list-sessions|view-session|status)( .*)?$' }
+
+  # ---- aidor self ------------------------------------------------------
+  - { exe: aidor, args_regex: '^(doctor|cancel|status|--help|--version)( .*)?$' }
+
+  # ---- PowerShell read-only / pipeline cmdlets -------------------------
+  - { exe: get-childitem,    args_regex: '.*' }
+  - { exe: get-content,      args_regex: '.*' }
+  - { exe: get-item,         args_regex: '.*' }
+  - { exe: get-itemproperty, args_regex: '.*' }
+  - { exe: get-location,     args_regex: '.*' }
+  - { exe: get-command,      args_regex: '.*' }
+  - { exe: get-help,         args_regex: '.*' }
+  - { exe: get-date,         args_regex: '.*' }
+  - { exe: get-process,      args_regex: '.*' }
+  - { exe: get-member,       args_regex: '.*' }
+  - { exe: get-history,      args_regex: '.*' }
+  - { exe: set-location,     args_regex: '.*' }
+  - { exe: push-location,    args_regex: '.*' }
+  - { exe: pop-location,     args_regex: '.*' }
+  - { exe: resolve-path,     args_regex: '.*' }
+  - { exe: test-path,        args_regex: '.*' }
+  - { exe: join-path,        args_regex: '.*' }
+  - { exe: split-path,       args_regex: '.*' }
+  - { exe: convert-path,     args_regex: '.*' }
+  - { exe: select-string,    args_regex: '.*' }
+  - { exe: where-object,     args_regex: '.*' }
+  - { exe: foreach-object,   args_regex: '.*' }
+  - { exe: select-object,    args_regex: '.*' }
+  - { exe: sort-object,      args_regex: '.*' }
+  - { exe: group-object,     args_regex: '.*' }
+  - { exe: measure-object,   args_regex: '.*' }
+  - { exe: compare-object,   args_regex: '.*' }
+  - { exe: format-table,     args_regex: '.*' }
+  - { exe: format-list,      args_regex: '.*' }
+  - { exe: format-wide,      args_regex: '.*' }
+  - { exe: format-custom,    args_regex: '.*' }
+  - { exe: out-string,       args_regex: '.*' }
+  - { exe: out-file,         args_regex: '.*' }
+  - { exe: out-null,         args_regex: '.*' }
+  - { exe: out-host,         args_regex: '.*' }
+  - { exe: write-host,       args_regex: '.*' }
+  - { exe: write-output,     args_regex: '.*' }
+  - { exe: write-error,      args_regex: '.*' }
+  - { exe: write-warning,    args_regex: '.*' }
+  - { exe: write-verbose,    args_regex: '.*' }
+  - { exe: write-debug,      args_regex: '.*' }
+  - { exe: write-information, args_regex: '.*' }
+  - { exe: tee-object,       args_regex: '.*' }
+  - { exe: convertto-json,   args_regex: '.*' }
+  - { exe: convertfrom-json, args_regex: '.*' }
+  - { exe: convertto-csv,    args_regex: '.*' }
+  - { exe: convertfrom-csv,  args_regex: '.*' }
+  - { exe: import-csv,       args_regex: '.*' }
+  - { exe: export-csv,       args_regex: '.*' }
+  # File-mutating PowerShell cmdlets — path containment will keep them
+  # inside the repo.
+  - { exe: new-item,         args_regex: '.*' }
+  - { exe: set-content,      args_regex: '.*' }
+  - { exe: add-content,      args_regex: '.*' }
+  - { exe: clear-content,    args_regex: '.*' }
+  - { exe: copy-item,        args_regex: '.*' }
+  - { exe: move-item,        args_regex: '.*' }
+  - { exe: remove-item,      args_regex: '.*' }
+  - { exe: rename-item,      args_regex: '.*' }
+  - { exe: set-item,         args_regex: '.*' }
+  - { exe: set-itemproperty, args_regex: '.*' }
+
+  # ---- Bash / Unix utilities ------------------------------------------
+  - { exe: ls,       args_regex: '.*' }
+  - { exe: cat,      args_regex: '.*' }
+  - { exe: head,     args_regex: '.*' }
+  - { exe: tail,     args_regex: '.*' }
+  - { exe: wc,       args_regex: '.*' }
+  - { exe: grep,     args_regex: '.*' }
+  - { exe: rg,       args_regex: '.*' }
+  - { exe: ripgrep,  args_regex: '.*' }
+  - { exe: find,     args_regex: '.*' }
+  - { exe: fd,       args_regex: '.*' }
+  - { exe: awk,      args_regex: '.*' }
+  - { exe: sed,      args_regex: '.*' }
+  - { exe: sort,     args_regex: '.*' }
+  - { exe: uniq,     args_regex: '.*' }
+  - { exe: tr,       args_regex: '.*' }
+  - { exe: cut,      args_regex: '.*' }
+  - { exe: paste,    args_regex: '.*' }
+  - { exe: xargs,    args_regex: '.*' }
+  - { exe: tee,      args_regex: '.*' }
+  - { exe: echo,     args_regex: '.*' }
+  - { exe: printf,   args_regex: '.*' }
+  - { exe: pwd,      args_regex: '.*' }
+  - { exe: cd,       args_regex: '.*' }
+  - { exe: mkdir,    args_regex: '.*' }
+  - { exe: touch,    args_regex: '.*' }
+  - { exe: rm,       args_regex: '.*' }
+  - { exe: mv,       args_regex: '.*' }
+  - { exe: cp,       args_regex: '.*' }
+  - { exe: ln,       args_regex: '.*' }
+  - { exe: file,     args_regex: '.*' }
+  - { exe: stat,     args_regex: '.*' }
+  - { exe: readlink, args_regex: '.*' }
+  - { exe: realpath, args_regex: '.*' }
+  - { exe: basename, args_regex: '.*' }
+  - { exe: dirname,  args_regex: '.*' }
+  - { exe: env,      args_regex: '.*' }
+  - { exe: which,    args_regex: '.*' }
+  - { exe: where,    args_regex: '.*' }
+  - { exe: type,     args_regex: '.*' }
+  - { exe: md5sum,   args_regex: '.*' }
+  - { exe: sha256sum, args_regex: '.*' }
+  - { exe: diff,     args_regex: '.*' }
+
+  # ---- Misc Windows utilities -----------------------------------------
+  # `tree` / `attrib` are read-only and useful for inspecting layout.
+  - { exe: tree,   args_regex: '.*' }
+  - { exe: attrib, args_regex: '.*' }
+  - { exe: dir,    args_regex: '.*' }
+  - { exe: cls,    args_regex: '.*' }
+  - { exe: clear,  args_regex: '.*' }

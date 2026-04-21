@@ -99,7 +99,7 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
     # need (see `guard_profile.py` module docstring); the hook is now
     # the sole enforcer of shell policy.
     if tool in {"bash", "powershell", "shell"}:
-        decision = _check_shell_deny_rules(payload, args)
+        decision = _check_shell_allowlist(payload, args)
         if decision is not None:
             return decision
         decision = _check_shell_escape(payload, args)
@@ -407,81 +407,15 @@ def _check_path_containment(payload: dict[str, Any], args: dict[str, Any]) -> di
 
 # ---- Shell policy enforcement ---------------------------------------------
 #
-# The following tables encode the security policy that used to live in
-# the `guard_profile.py` flag matrix. See that module's docstring for
-# why enforcement moved into the hook.
-
-# Executables whose mere invocation is denied — no subcommand parsing.
-_DENY_EXECUTABLES: frozenset[str] = frozenset(
-    {
-        "sudo",
-        "doas",
-        "curl",
-        "wget",
-        "apt",
-        "apt-get",
-        "brew",
-        "choco",
-        "scoop",
-        "winget",
-        "pipx",
-        # Nested interpreters — route around the whole policy.
-        "iex",
-        "invoke-expression",
-        "start-process",
-    }
-)
-
-# (executable, required-prefix-args-tuple) → denial reason.
-# The args tuple is matched against the START of the non-flag argv for
-# the clause, with a few normalisations (lowercase, strip leading ``--``
-# / ``-`` duplicates, handle `=` value attachments). This gives us the
-# multi-token matching that Copilot's flag grammar can't express.
-_DENY_SUBCOMMANDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
-    ("git", ("push",), "git push (never push from an agent session)"),
-    ("git", ("remote",), "git remote (would reconfigure remotes)"),
-    ("sudo", (), "sudo is never permitted"),
-    ("cargo", ("install",), "cargo install is a global install"),
-    ("go", ("install",), "go install is a global install"),
-    ("copilot", ("update",), "copilot update would mutate the CLI"),
-    ("copilot", ("login",), "copilot login would mutate auth state"),
-    ("copilot", ("logout",), "copilot logout would mutate auth state"),
-    ("aidor", ("run",), "aidor run would spawn a nested orchestrator (deadlock)"),
-)
-
-# Token sequences that must appear anywhere in the argv list (in order,
-# contiguous) for the rule to fire. Used for flag-sensitive denies like
-# `npm install -g`, `git config --global`, `dotnet tool install -g`.
-_DENY_SEQUENCES: tuple[tuple[str, tuple[str, ...], str], ...] = (
-    ("git", ("config", "--global"), "git config --global"),
-    ("git", ("config", "--system"), "git config --system"),
-    ("npm", ("install", "-g"), "npm install -g"),
-    ("npm", ("i", "-g"), "npm i -g"),
-    ("npm", ("install", "--global"), "npm install --global"),
-    ("npm", ("i", "--global"), "npm i --global"),
-    ("pnpm", ("add", "-g"), "pnpm add -g"),
-    ("pnpm", ("install", "-g"), "pnpm install -g"),
-    ("pnpm", ("add", "--global"), "pnpm add --global"),
-    ("yarn", ("global",), "yarn global"),
-    ("npx", ("--yes",), "npx --yes (implicit install)"),
-    ("npx", ("-y",), "npx -y (implicit install)"),
-    ("dotnet", ("tool", "install", "-g"), "dotnet tool install -g"),
-    ("dotnet", ("tool", "install", "--global"), "dotnet tool install --global"),
-    ("dotnet", ("workload", "install"), "dotnet workload install"),
-    ("sdkmanager", ("--install",), "sdkmanager --install"),
-    # Nested shells — route around every other check.
-    ("cmd", ("/c",), "nested cmd /c"),
-    ("cmd", ("/k",), "nested cmd /k"),
-    ("powershell", ("-c",), "nested powershell -c"),
-    ("powershell", ("-command",), "nested powershell -Command"),
-    ("powershell", ("-encodedcommand",), "nested powershell -EncodedCommand"),
-    ("pwsh", ("-c",), "nested pwsh -c"),
-    ("pwsh", ("-command",), "nested pwsh -Command"),
-    ("pwsh", ("-encodedcommand",), "nested pwsh -EncodedCommand"),
-    ("bash", ("-c",), "nested bash -c"),
-    ("sh", ("-c",), "nested sh -c"),
-    ("zsh", ("-c",), "nested zsh -c"),
-)
+# Allowlist-based: every clause in the shell command must match at least
+# one rule loaded from `aidor/policies/shell_allowlist.yml` (defaults)
+# plus optionally `.aidor/shell_allowlist.yml` (user extension). Anything
+# not on the list is denied.
+#
+# After the allowlist match, `_check_shell_escape` runs to ensure no
+# token resolves to a path outside the repo. The `pip install` form is
+# special-cased: the allowlist permits it, but the code-side gate then
+# requires a Python lockfile AND `AIDOR_ALLOW_LOCAL_INSTALL=1`.
 
 # Pip-install handling is gated on the repo having a Python lockfile
 # (poetry.lock / uv.lock / Pipfile.lock) AND the phase being configured
@@ -504,6 +438,84 @@ def _normalise_exe(token: str) -> str:
     return basename
 
 
+def _split_shell_statements(cmd: str) -> list[str]:
+    """Split ``cmd`` on shell statement separators, respecting quotes
+    and grouping characters.
+
+    Recognises ``;``, ``&&``, ``||``, ``|``, ``&`` as separators but
+    skips them when nested inside ``'...'``, ``\"...\"``, ``(...)``,
+    ``{...}``, ``$(...)``, or ``${...}``. This prevents naive splits
+    from shredding PowerShell pipelines like
+    ``Get-Content $f | Measure-Object`` that appear inside a
+    ``ForEach-Object { ... }`` block.
+    """
+    out: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(cmd)
+    quote: str | None = None
+    paren_depth = 0
+    brace_depth = 0
+    while i < n:
+        ch = cmd[i]
+        if quote is not None:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "(":
+            paren_depth += 1
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == ")":
+            if paren_depth > 0:
+                paren_depth -= 1
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "{":
+            brace_depth += 1
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "}":
+            if brace_depth > 0:
+                brace_depth -= 1
+            buf.append(ch)
+            i += 1
+            continue
+        if paren_depth == 0 and brace_depth == 0:
+            # Two-char separators first.
+            if ch == "&" and i + 1 < n and cmd[i + 1] == "&":
+                out.append("".join(buf).strip())
+                buf.clear()
+                i += 2
+                continue
+            if ch == "|" and i + 1 < n and cmd[i + 1] == "|":
+                out.append("".join(buf).strip())
+                buf.clear()
+                i += 2
+                continue
+            if ch in (";", "|", "&"):
+                out.append("".join(buf).strip())
+                buf.clear()
+                i += 1
+                continue
+        buf.append(ch)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        out.append(tail)
+    return [c for c in out if c]
+
+
 def _iter_shell_clauses(cmd: str) -> Iterator[tuple[str, list[str]]]:
     """Yield ``(normalised-executable, all-tokens-after-it)`` for every
     statement in a shell command line.
@@ -512,7 +524,7 @@ def _iter_shell_clauses(cmd: str) -> Iterator[tuple[str, list[str]]]:
     so ``cd D:\\repo; npm install -g foo`` is decomposed into two clauses
     (``cd``, ``npm``) and the dangerous one is still detected.
     """
-    for clause in (c.strip() for c in re.split(r"(?:&&|\|\||;|\||&)", cmd) if c.strip()):
+    for clause in _split_shell_statements(cmd):
         try:
             tokens = shlex.split(clause, posix=False)
         except ValueError:
@@ -531,19 +543,6 @@ def _iter_shell_clauses(cmd: str) -> Iterator[tuple[str, list[str]]]:
                 yield ("pip", rest[2:])
                 continue
         yield (exe, rest)
-
-
-def _has_contiguous_subsequence(args: list[str], needle: tuple[str, ...]) -> bool:
-    """True iff ``needle`` appears as a contiguous subsequence of
-    ``args``. Matching is case-insensitive. Values attached to flags via
-    ``=`` (``--global=1``) are normalised to the flag alone so
-    ``("config","--global")`` still matches ``git config --global=foo``."""
-    if not needle:
-        return True
-    flat = [_flag_stem(a).lower() for a in args]
-    n = len(needle)
-    target = tuple(s.lower() for s in needle)
-    return any(tuple(flat[i : i + n]) == target for i in range(len(flat) - n + 1))
 
 
 def _flag_stem(token: str) -> str:
@@ -576,47 +575,84 @@ def _pip_install_allowed(
     )
 
 
-def _check_shell_deny_rules(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any] | None:
-    """Apply the shell-policy deny rules to every clause in the command.
+def _load_shell_allowlist(repo: Path) -> list[tuple[str, re.Pattern[str], dict[str, Any]]]:
+    """Return the compiled allowlist as a list of ``(exe, args_pattern, raw_rule)``.
 
-    Denials are definitive: any matching clause causes the whole tool
-    call to be rejected with a reason the LLM can read.
+    Loads the bundled defaults from ``aidor.policies.shell_allowlist.yml``
+    and concatenates any user-supplied rules from
+    ``<repo>/.aidor/shell_allowlist.yml``. Rules with malformed regexes
+    are silently dropped (logging would happen via the breadcrumb in
+    the caller).
+    """
+    raw_rules: list[dict[str, Any]] = []
+    try:
+        from importlib import resources
+
+        text = (resources.files("aidor.policies") / "shell_allowlist.yml").read_text(
+            encoding="utf-8"
+        )
+        import yaml
+
+        data = yaml.safe_load(text) or {}
+        raw_rules.extend(data.get("rules") or [])
+    except Exception:  # pragma: no cover - defensive
+        pass
+    user = repo / ".aidor" / "shell_allowlist.yml"
+    if user.is_file():
+        try:
+            import yaml
+
+            data = yaml.safe_load(user.read_text(encoding="utf-8")) or {}
+            raw_rules.extend(data.get("rules") or [])
+        except Exception:  # pragma: no cover - defensive
+            pass
+    compiled: list[tuple[str, re.Pattern[str], dict[str, Any]]] = []
+    for rule in raw_rules:
+        exe = (rule.get("exe") or "").strip().lower()
+        if not exe:
+            continue
+        try:
+            pat = re.compile(rule.get("args_regex", ".*"))
+        except re.error:
+            continue
+        compiled.append((exe, pat, rule))
+    return compiled
+
+
+def _check_shell_allowlist(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any] | None:
+    """Deny the call unless every shell clause matches an allowlist rule.
+
+    Per-clause matching:
+      * The first token is normalised to its bare executable name
+        (lower-case, stripped of ``.exe``/``.cmd``/``.bat`` and any
+        leading directory).
+      * The remaining tokens are joined with a single space and matched
+        against ``args_regex`` (Python ``re.match``).
+      * The first rule whose ``exe`` matches AND whose pattern matches
+        wins; if no rule wins for a clause the whole call is denied.
+
+    Special case: ``pip install`` is gated by ``_pip_install_allowed``
+    (lockfile + ``AIDOR_ALLOW_LOCAL_INSTALL=1``) regardless of any
+    allowlist rule that might match. This keeps the install policy in
+    code where it can read the runtime env.
     """
     cmd = args.get("command") or args.get("cmd") or ""
     if not isinstance(cmd, str) or not cmd:
         return None
 
-    # Lazy import to avoid a cycle at module load time (guard_profile
-    # imports nothing aidor-local, but keeping the import here mirrors
-    # the existing style for other optional imports in this file).
     from aidor.guard_profile import detect_python_lockfile
 
+    repo = _repo_root(payload)
+    rules = _load_shell_allowlist(repo)
     allow_local_install = os.environ.get("AIDOR_ALLOW_LOCAL_INSTALL", "0") == "1"
-    python_lockfile = allow_local_install and detect_python_lockfile(_repo_root(payload))
+    python_lockfile = allow_local_install and detect_python_lockfile(repo)
 
     for exe, rest in _iter_shell_clauses(cmd):
-        if exe in _DENY_EXECUTABLES:
-            return _deny(f"{exe} is on the deny list", cmd)
+        if not exe:
+            continue
 
-        for rule_exe, required, label in _DENY_SUBCOMMANDS:
-            if exe != rule_exe:
-                continue
-            if not required:
-                return _deny(label, cmd)
-            # Required args must appear at the START of the non-flag
-            # positional stream (to avoid e.g. `git log push` matching
-            # `git push`).
-            positional = [t for t in rest if not t.startswith("-")]
-            head = tuple(p.lower() for p in positional[: len(required)])
-            if head == required:
-                return _deny(label, cmd)
-
-        for rule_exe, sequence, label in _DENY_SEQUENCES:
-            if exe != rule_exe:
-                continue
-            if _has_contiguous_subsequence(rest, sequence):
-                return _deny(label, cmd)
-
+        # Special case: pip install — always go through the gate, even
+        # if a permissive allowlist rule would otherwise match.
         if exe in {"pip", "pip3"}:
             positional = [t for t in rest if not t.startswith("-")]
             if positional and positional[0].lower() == "install":
@@ -625,8 +661,25 @@ def _check_shell_deny_rules(payload: dict[str, Any], args: dict[str, Any]) -> di
                     allow_local_install=allow_local_install,
                     python_lockfile=python_lockfile,
                 )
-                if not allowed:
-                    return _deny(reason, cmd)
+                if allowed:
+                    continue
+                return _deny(reason, cmd)
+
+        joined = " ".join(rest)
+        matched = False
+        for rule_exe, rule_pat, _raw in rules:
+            if rule_exe != exe:
+                continue
+            if rule_pat.match(joined):
+                matched = True
+                break
+        if not matched:
+            preview = (exe + " " + joined).strip()
+            return _deny(
+                f"shell clause not in aidor allowlist: {preview!r}. "
+                "Extend .aidor/shell_allowlist.yml or ask the human to amend the default policy",
+                cmd,
+            )
 
     return None
 
@@ -657,54 +710,6 @@ _SHELL_OPERATORS = frozenset(
     {"|", "&", "&&", "||", ";", ";;", ">", ">>", "<", "<<", "2>", "2>>", "(", ")"}
 )
 
-# Whitelisted shell entries that take path arguments. When the command's
-# first token is one of these, we cannot rely on the path-separator
-# heuristic to decide which arguments are paths: cmdlets like
-# `Get-Content linked-secret.txt` accept a *bare* relative filename, and
-# that filename may be a repo-local symlink/junction whose target lives
-# outside the tree. For these cmdlets we therefore treat every non-flag,
-# non-operator argument as a path candidate, so `Path.resolve()` (which
-# follows symlinks) gets a chance to flag the escape. Names are matched
-# case-insensitively to mirror PowerShell's own dispatch.
-_FILESYSTEM_CMDLETS = frozenset(
-    {
-        "get-childitem",
-        "get-content",
-        "get-item",
-        "get-itemproperty",
-        "join-path",
-        "new-item",
-        "resolve-path",
-        "select-string",
-        "split-path",
-        "test-path",
-        # Common bash/Unix filesystem commands that accept bare filenames
-        # and follow symlinks. These aren't all in the allowlist today,
-        # but if one is ever added we want the same containment check to
-        # apply automatically.
-        "cat",
-        "head",
-        "tail",
-        "less",
-        "more",
-        "ls",
-        "stat",
-        "file",
-        "readlink",
-        "realpath",
-        "wc",
-        "md5sum",
-        "sha256sum",
-        "touch",
-        "mkdir",
-        "rmdir",
-        "rm",
-        "cp",
-        "mv",
-        "ln",
-    }
-)
-
 
 def _looks_like_path(token: str) -> bool:
     if not token:
@@ -731,28 +736,23 @@ def _iter_shell_path_candidates(cmd: str) -> Iterator[str]:
     """Yield every token in ``cmd`` that looks like a filesystem path.
 
     The command is first split on shell statement separators (``;``,
-    ``&&``, ``||``, ``|``, ``&``) so that each clause's first token is
-    correctly recognised as the executable for the
-    ``_FILESYSTEM_CMDLETS`` strict-mode check, and so that a trailing
-    ``;`` doesn't get glued onto a path token (which previously caused
-    legitimate ``cd D:\\repo; pytest -q`` chains to be denied because
+    ``&&``, ``||``, ``|``, ``&``) by the quote/paren-aware
+    ``_split_shell_statements`` so a trailing ``;`` doesn't get glued
+    onto a path token (which previously caused legitimate
+    ``cd D:\\repo; pytest -q`` chains to be denied because
     ``D:\\repo;`` resolved to a non-existent path).
 
-    Each clause is then tokenised with ``shlex.split`` (POSIX-style
-    quoting works for both bash and PowerShell single/double quotes) so
-    quoted paths are recovered intact. Tokens are stripped of
-    surrounding back-ticks/quotes, of trailing shell punctuation, and
-    of PowerShell parameter prefixes before the path heuristic runs.
+    Each clause is tokenised with ``shlex.split(posix=False)`` (Windows
+    backslashes survive intact). Tokens are stripped of surrounding
+    back-ticks/quotes, of trailing shell punctuation, and of PowerShell
+    parameter prefixes before the path heuristic runs.
 
-    When a clause starts with a known filesystem cmdlet (see
-    ``_FILESYSTEM_CMDLETS``) the path heuristic is bypassed: every
-    non-flag, non-operator argument is yielded so that bare relative
-    filenames -- which may be repo-local symlinks/junctions pointing
-    outside the tree -- get resolved and containment-checked.
+    Tokens containing PowerShell expansion syntax (``$``, backtick,
+    parens, braces) are skipped — they are evaluated at runtime and
+    cannot be statically resolved as filesystem paths.
     """
-    # Split the command line on shell statement separators first.
-    # `re.split` keeps clauses; we drop empties.
-    clauses = [c.strip() for c in re.split(r"(?:&&|\|\||;|\||&)", cmd) if c.strip()]
+    # Split the command line on shell statement separators (quote/paren-aware).
+    clauses = _split_shell_statements(cmd)
     for clause in clauses:
         try:
             # posix=False keeps Windows backslashes intact (a POSIX split would
@@ -776,19 +776,21 @@ def _iter_shell_path_candidates(cmd: str) -> Iterator[str]:
         if not cleaned:
             continue
 
-        first = cleaned[0]
-        # Strip a path prefix so e.g. `/usr/bin/cat` or `C:\bin\Get-Content.exe`
-        # still maps to its basename for the cmdlet-name check.
-        basename = first.replace("\\", "/").rsplit("/", 1)[-1]
-        if basename.lower().endswith(".exe"):
-            basename = basename[:-4]
-        strict = basename.lower() in _FILESYSTEM_CMDLETS
-
+        # Strict-mode (whitelisted-cmdlet) yielding is no longer needed:
+        # with `--allow-all-tools`, every cmdlet is permitted by Copilot,
+        # and we only care about path-LOOKING tokens that could escape
+        # the repo. Yielding bare-name args of e.g. `Get-Content` produced
+        # false positives on dynamic PowerShell tokens like `$_.FullName`.
         for token in cleaned[1:]:
             value = _strip_param_prefix(token).strip("'\"").strip("`").rstrip(";&|")
             if not value:
                 continue
-            if strict or _looks_like_path(value):
+            # Skip PowerShell expansion / subexpression / scriptblock
+            # syntax — these are evaluated at runtime and are not
+            # statically resolvable as filesystem paths.
+            if any(c in value for c in ("$", "`", "(", ")", "{", "}")):
+                continue
+            if _looks_like_path(value):
                 yield value
 
 
