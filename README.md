@@ -1,5 +1,33 @@
 # aidor — AI Review Orchestrator
 
+> ## ⚠️ DISCLAIMER — READ BEFORE USE
+>
+> **This is a personal side project. It is not a product. It is not
+> intended for anyone's use except my own.**
+>
+> - **No warranty, no support, no guarantees** of any kind, express or
+>   implied. The software is provided **"AS IS"**.
+> - **You run it at your own risk.** It autonomously drives LLM agents
+>   that can edit files, run shell commands, and consume large amounts
+>   of API quota.
+> - **The author accepts no responsibility** for any cost, loss, or
+>   damage — financial, physical, intellectual, reputational, or
+>   otherwise — arising from use of this tool. That explicitly includes
+>   (but is not limited to) **runaway bills on LLM subscriptions, API
+>   credits, cloud services, or Copilot quotas**, broken code,
+>   destroyed data, leaked secrets, or any downstream consequence of
+>   actions an agent takes on your behalf.
+> - Long autonomous runs can consume **substantial** tokens / premium
+>   requests / AI Units. Monitor your usage. Set hard budgets at the
+>   provider level if you care.
+>
+> You are free to fork, modify, and reuse this code under the **MIT
+> License** (a permissive license — do whatever you want, just keep
+> the copyright notice). If you fork it, it's yours; the same
+> disclaimer applies to you.
+
+---
+
 `aidor` drives two LLMs (a **coder** and a **reviewer**) through the GitHub
 Copilot CLI in an automated review↔fix loop. It is a thin supervisor around
 `copilot -p --autopilot --output-format=json` that:

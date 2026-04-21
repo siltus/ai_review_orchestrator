@@ -109,8 +109,7 @@ def test_python_local_install_does_not_shadow_pip_install_editable(tmp_path):
     # And the editable-install allow must NOT be shadowed by any deny
     # under the documented prefix-precedence semantics.
     assert not _deny_shadows("shell(pip install -e)", deny), (
-        "deny precedence still shadows pip install -e: "
-        f"{[d for d in deny if 'pip' in d]}"
+        f"deny precedence still shadows pip install -e: {[d for d in deny if 'pip' in d]}"
     )
 
 
@@ -240,6 +239,23 @@ def test_quality_gate_commands_are_allowed(tmp_path):
         "shell(ruff)",
         "shell(pip-audit)",
         "shell(pre-commit)",
+        # Bare interpreter + launcher forms (transcript evidence from
+        # the 17-round dogfood run: PowerShell coders repeatedly invoked
+        # `python`, `py`, `pytest.exe`, `ruff.exe`, etc. and got denied).
+        "shell(python)",
+        "shell(python.exe)",
+        "shell(py)",
+        "shell(pytest.exe)",
+        "shell(ruff.exe)",
+        "shell(pip-audit.exe)",
+        "shell(pre-commit.exe)",
+        # Inspection utilities.
+        "shell(where)",
+        "shell(Get-ChildItem)",
+        "shell(Get-Content)",
+        "shell(Test-Path)",
+        # Bare `git` (broad but dangerous subcommands remain denied).
+        "shell(git)",
     ):
         assert rule in allow, f"missing allow for {rule}"
         # Aliased forms must also appear so the matrix matches whichever

@@ -40,10 +40,69 @@ _BASE_ALLOW = (
     "shell(python -m pip_audit)",
     "shell(python -m pytest)",
     "shell(python -m pre_commit)",
+    # Bare interpreter / launcher forms (transcript evidence: coders
+    # invoke `python`, `python3`, `py`, or the `.venv\Scripts\python.exe`
+    # absolute path under PowerShell). `pip install` is still blocked by
+    # the conditional deny below; plain `python`/`py` access is fine.
+    "shell(python)",
+    "shell(python3)",
+    "shell(python3.11)",
+    "shell(python.exe)",
+    "shell(py)",
+    "shell(py.exe)",
+    # Test / lint / audit runners invoked directly (not via `python -m`).
     "shell(pytest)",
+    "shell(pytest.exe)",
+    "shell(py.test)",
     "shell(ruff)",
+    "shell(ruff.exe)",
     "shell(pip-audit)",
+    "shell(pip-audit.exe)",
     "shell(pre-commit)",
+    "shell(pre-commit.exe)",
+    "shell(coverage)",
+    "shell(coverage.exe)",
+    # Safe inspection / locator utilities used by coders to discover the
+    # toolchain (`where python`, `which pytest`, etc.).
+    "shell(where)",
+    "shell(where.exe)",
+    "shell(which)",
+    # Common read-only PowerShell cmdlets the coder legitimately needs
+    # to inspect the workspace, check file existence, and emit small
+    # amounts of text. None of these can mutate state outside what
+    # `read` / `write` already permit. Aliased to bash(...)/powershell(...)
+    # below — the bash variants are harmless noise on non-PowerShell
+    # platforms.
+    "shell(Get-ChildItem)",
+    "shell(Get-Item)",
+    "shell(Get-ItemProperty)",
+    "shell(Get-Content)",
+    "shell(Get-Command)",
+    "shell(Get-Location)",
+    "shell(Get-Date)",
+    "shell(Get-Process)",
+    "shell(Test-Path)",
+    "shell(Resolve-Path)",
+    "shell(Select-String)",
+    "shell(Select-Object)",
+    "shell(Sort-Object)",
+    "shell(Where-Object)",
+    "shell(ForEach-Object)",
+    "shell(Measure-Object)",
+    "shell(Format-List)",
+    "shell(Format-Table)",
+    "shell(Out-String)",
+    "shell(Write-Output)",
+    "shell(Write-Host)",
+    "shell(New-Item)",
+    "shell(Join-Path)",
+    "shell(Split-Path)",
+    # Bare `git` entry (broad read+local-mutation access). Dangerous
+    # subcommands — push, remote, global/system config — are listed in
+    # `_BASE_DENY`, and deny rules take precedence, so this does NOT
+    # reopen them. It just lets `git --version`, `git help`, `git reflog`,
+    # etc. work without each being enumerated.
+    "shell(git)",
     # Build / test commands discovered from manifests are appended below.
 )
 
