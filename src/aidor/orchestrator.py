@@ -241,6 +241,10 @@ class Orchestrator:
                         return 0
                     if gate_footer:
                         rnd.footer = gate_footer.to_dict()
+                        # Route the coder to the GATE'S review (the original
+                        # one was clean; only the gate found new issues).
+                        footer = gate_footer
+                        review_path = gate_path
                     self._note(f"round {round_index}: readiness gate found issues; continuing")
 
             # Otherwise, run the fix phase.

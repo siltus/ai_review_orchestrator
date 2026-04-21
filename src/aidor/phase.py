@@ -204,17 +204,34 @@ class PhaseRunner:
 
         async def watchdog() -> str:
             """Idle & round-timeout watchdog. Returns a stop_reason override
-            when the process should be killed; empty string on clean exit."""
+            when the process should be killed; empty string on clean exit.
+
+            Both the idle timer and the round-timeout baseline are PAUSED
+            while a hook of ours is currently waiting (e.g. on a human).
+            We track cumulative pause duration in `paused_total` and subtract
+            it from elapsed wall-clock when comparing to the round timeout.
+            """
             nonlocal last_activity
             warned = False
+            paused_total = 0.0
+            pause_started: float | None = None
             while proc.returncode is None:
                 await asyncio.sleep(1.0)
                 now = time.monotonic()
-                if self._is_hook_busy():
-                    # Pause timers while a hook (e.g. human wait) is running.
+                busy = self._is_hook_busy()
+                if busy:
+                    # Pause: shift idle baseline AND remember when the pause
+                    # began so we can subtract it from the round-timeout
+                    # comparison once the hook completes.
                     last_activity = now
+                    if pause_started is None:
+                        pause_started = now
                     continue
-                if now - phase_start > self.config.round_timeout_s:
+                if pause_started is not None:
+                    paused_total += now - pause_started
+                    pause_started = None
+                effective_elapsed = (now - phase_start) - paused_total
+                if effective_elapsed > self.config.round_timeout_s:
                     log.warning("phase %s-%d exceeded round timeout", self.role, self.phase_index)
                     return "timeout"
                 idle_s = now - last_activity

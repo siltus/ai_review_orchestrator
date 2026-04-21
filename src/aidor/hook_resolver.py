@@ -71,7 +71,14 @@ def _passthrough(event: str, payload: dict[str, Any]) -> None:
 def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     """preToolUse: intercept ask_user + enforce path containment on writes/edits."""
     tool = _get_field(payload, "toolName", "tool_name", default="")
-    args = _get_field(payload, "toolArgs", "tool_input", default={}) or {}
+    raw_args = _get_field(payload, "toolArgs", "tool_input", default={})
+    if isinstance(raw_args, dict):
+        args: dict[str, Any] = raw_args
+    elif isinstance(raw_args, str):
+        # Some tools (powershell/bash) deliver the command as a bare string.
+        args = {"command": raw_args}
+    else:
+        args = {}
 
     _log_breadcrumb(payload, f"preToolUse tool={tool!r}")
 
@@ -367,11 +374,50 @@ def _repo_root(payload: dict[str, Any]) -> Path:
 
 
 def _extract_question(args: dict[str, Any]) -> str:
+    """Pull the human-readable question out of the ask_user tool args.
+
+    Copilot CLI sometimes wraps the ask_user payload as
+        {"command": "<json-encoded body>"}
+    where the inner body itself contains {"question": "...", "choices": [...]}.
+    We unwrap up to two levels and return the plain question text (suffixing
+    choices when present), so the operator sees a clean prompt instead of
+    nested JSON.
+    """
+    unwrapped = _unwrap_ask_user_args(args)
+    question = ""
     for key in ("question", "prompt", "message", "text"):
-        val = args.get(key)
+        val = unwrapped.get(key)
         if isinstance(val, str) and val.strip():
-            return val
-    return json.dumps(args, ensure_ascii=False)
+            question = val.strip()
+            break
+    if not question:
+        return json.dumps(unwrapped, ensure_ascii=False)
+
+    choices = unwrapped.get("choices")
+    if isinstance(choices, list) and choices:
+        rendered = "\n".join(
+            f"  {i + 1}. {c}" for i, c in enumerate(choices) if isinstance(c, str)
+        )
+        if rendered:
+            question = f"{question}\n\nChoices:\n{rendered}"
+    return question
+
+
+def _unwrap_ask_user_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Recursively unwrap a {"command": "<json>"} envelope (up to 3 levels)."""
+    current: Any = args
+    for _ in range(3):
+        if not isinstance(current, dict):
+            break
+        cmd = current.get("command")
+        if isinstance(cmd, str) and cmd.lstrip().startswith("{"):
+            try:
+                current = json.loads(cmd)
+                continue
+            except json.JSONDecodeError:
+                break
+        break
+    return current if isinstance(current, dict) else args
 
 
 def _audit(

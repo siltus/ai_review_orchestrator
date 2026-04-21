@@ -72,10 +72,13 @@ _BASE_DENY = (
 
 
 # When --allow-local-install is on we add these back to the allow list.
+# Note: `pip install --user` is intentionally absent — `--user` writes to
+# `%APPDATA%\Python` (Windows) or `~/.local/` (Unix), which is OUTSIDE the
+# repo and therefore violates the "no global installs" guard rule. Use
+# `pip install -e .` inside a project venv instead.
 _LOCAL_INSTALL_ALLOW = (
     "shell(poetry install)",
     "shell(pip install -e)",
-    "shell(pip install --user)",
     "shell(npm ci)",
     "shell(npm install)",
     "shell(pnpm install)",
@@ -91,14 +94,21 @@ _LOCAL_INSTALL_ALLOW = (
 )
 
 
+# Files whose presence indicates the repo has a real lockfile (and therefore
+# project-local installs are meaningful + reproducible). Note: `pyproject.toml`
+# is NOT a lockfile — its presence does not guarantee a pinned dependency
+# graph, so it is intentionally excluded.
 _LOCAL_INSTALL_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("pyproject.toml", ()),
+    # Python
     ("poetry.lock", ()),
     ("uv.lock", ()),
     ("requirements.txt", ()),
+    ("Pipfile.lock", ()),
+    # JS
     ("package-lock.json", ()),
     ("pnpm-lock.yaml", ()),
     ("yarn.lock", ()),
+    # Rust / Go / pixi
     ("Cargo.lock", ()),
     ("go.sum", ()),
     ("pixi.lock", ()),
@@ -115,6 +125,23 @@ def detect_local_install_available(repo: Path) -> bool:
     return False
 
 
+def _expand_shell_aliases(rules: tuple[str, ...]) -> list[str]:
+    """For every `shell(<cmd>)` rule, also emit `bash(<cmd>)` and
+    `powershell(<cmd>)` so the Guard matrix matches whichever underlying
+    tool name Copilot uses for shell execution on this platform.
+
+    Non-shell rules (e.g. `read`, `write`) pass through unchanged.
+    """
+    out: list[str] = []
+    for rule in rules:
+        out.append(rule)
+        if rule.startswith("shell(") and rule.endswith(")"):
+            inner = rule[len("shell(") : -1]
+            out.append(f"bash({inner})")
+            out.append(f"powershell({inner})")
+    return out
+
+
 def build_flags(
     repo: Path,
     *,
@@ -123,17 +150,19 @@ def build_flags(
     """Compose the list of `copilot` CLI flags for Guard policy.
 
     The returned list is ordered and ready to be passed to `subprocess`.
+    Every `shell(...)` rule is mirrored as `bash(...)` and `powershell(...)`
+    so the matrix evaluates regardless of which shell tool the model picks.
     """
     flags: list[str] = []
 
-    for rule in _BASE_ALLOW:
+    for rule in _expand_shell_aliases(_BASE_ALLOW):
         flags.append(f"--allow-tool={rule}")
 
     if allow_local_install and detect_local_install_available(repo):
-        for rule in _LOCAL_INSTALL_ALLOW:
+        for rule in _expand_shell_aliases(_LOCAL_INSTALL_ALLOW):
             flags.append(f"--allow-tool={rule}")
 
-    for rule in _BASE_DENY:
+    for rule in _expand_shell_aliases(_BASE_DENY):
         flags.append(f"--deny-tool={rule}")
 
     return flags

@@ -1,7 +1,10 @@
 """Tests for guard_profile flag matrix."""
 from __future__ import annotations
 
-from aidor.guard_profile import build_flags
+from aidor.guard_profile import (
+    build_flags,
+    detect_local_install_available,
+)
 
 
 def test_build_flags_base(tmp_path):
@@ -25,3 +28,35 @@ def test_build_flags_no_marker_no_local_install(tmp_path):
     joined = " ".join(flags)
     # Without any lockfile marker, npm install etc. must not be in the allow list.
     assert "npm install" not in joined or "--deny-tool" in joined
+
+
+def test_pyproject_alone_is_not_a_lockfile_marker(tmp_path):
+    """A bare pyproject.toml does NOT pin transitive deps, so it must not
+    enable the local-install allowlist on its own."""
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    assert detect_local_install_available(tmp_path) is False
+    flags = build_flags(tmp_path, allow_local_install=True)
+    joined = " ".join(flags)
+    assert "shell(pip install -e)" not in joined
+
+
+def test_pip_install_user_is_not_in_local_allowlist(tmp_path):
+    """`pip install --user` writes outside the repo and must never be allowed."""
+    (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
+    flags = build_flags(tmp_path, allow_local_install=True)
+    joined = " ".join(flags)
+    assert "pip install --user" not in joined
+
+
+def test_shell_rules_are_aliased_to_bash_and_powershell(tmp_path):
+    """Every shell(...) rule must also be expressed as bash(...) and
+    powershell(...) so the Guard matrix matches whichever underlying tool
+    name Copilot uses on this platform."""
+    flags = build_flags(tmp_path, allow_local_install=False)
+    assert any("--deny-tool=shell(git push)" == f for f in flags)
+    assert any("--deny-tool=bash(git push)" == f for f in flags)
+    assert any("--deny-tool=powershell(git push)" == f for f in flags)
+    assert any("--allow-tool=shell(git status)" == f for f in flags)
+    assert any("--allow-tool=bash(git status)" == f for f in flags)
+    assert any("--allow-tool=powershell(git status)" == f for f in flags)
+
