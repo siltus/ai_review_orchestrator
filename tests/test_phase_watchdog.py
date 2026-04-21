@@ -104,13 +104,15 @@ def test_phase_runner_round_timeout_pause_is_effective(
       t=4..7s fake_copilot continues running; watchdog unpaused
       t=7.0s  fake_copilot exits normally with stopReason=end_turn
 
-    With round_timeout_s=3 and paused_total≈4s, effective_elapsed at exit
-    is ~3s (at the boundary, `> round_timeout_s` is False). A broken
-    implementation that does NOT subtract `paused_total` would observe
-    effective_elapsed=~5s on the first unpaused tick after t=4s and trip
-    ``timeout`` — which is exactly the regression this test guards.
+    With round_timeout_s=5 and paused_total≈4s, effective_elapsed at exit
+    is ~3s (well under the limit). A broken implementation that does NOT
+    subtract `paused_total` would observe effective_elapsed=~5-7s on the
+    first unpaused tick after t=4s and trip ``timeout`` — which is
+    exactly the regression this test guards. The timeout is set to 5s
+    rather than 3s to absorb Windows subprocess-spawn jitter (0.5-2s on
+    a .cmd shim) without losing the semantic check.
     """
-    run_config.round_timeout_s = 3
+    run_config.round_timeout_s = 5
     run_config.idle_timeout_s = 60
     os.environ["FAKE_COPILOT_DELAY_S"] = "7"
     os.environ.pop("FAKE_COPILOT_EMIT_FILE", None)

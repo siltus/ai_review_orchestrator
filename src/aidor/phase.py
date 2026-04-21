@@ -271,6 +271,14 @@ class PhaseRunner:
             poll_interval = 1.0
             next_tick = phase_start + poll_interval
             abort_marker = self.config.aidor_dir / "ABORT"
+            # Pre-tick: if a hook was already pending when the watchdog
+            # started (the subprocess took longer to launch than the
+            # hook's first poll), record the pause NOW so we don't lose
+            # the credit if the pending file is removed before our first
+            # sleep tick fires.
+            if self._is_hook_busy():
+                pause_started = phase_start
+                last_activity = phase_start
             while proc.returncode is None:
                 now = time.monotonic()
                 delay = next_tick - now
