@@ -56,16 +56,40 @@ def test_flags_are_not_aliased_to_bash_or_powershell(tmp_path: Path):
 
 
 def test_argv_is_reasonably_compact(tmp_path: Path):
-    """The full argv contribution must stay well under the Windows cmd.exe
-    8 KB command-line limit so `fake_copilot.cmd` (and any real shell
-    wrapper) doesn't silently truncate. Leave plenty of headroom for the
-    rest of the argv (prompt, transcript paths, model selectors, etc.)."""
+    """The full argv contribution must stay well under Windows cmd.exe's
+    8191-char command-line buffer so `fake_copilot.cmd` (and any other
+    `.cmd` / `.bat` shim Copilot may dispatch through) doesn't silently
+    truncate. Leave plenty of headroom for the rest of the argv (prompt,
+    transcript paths, model selectors, etc.).
+
+    Note on the limits — they depend on HOW the process is launched, not
+    on which shell receives the command:
+
+    - `cmd.exe` (any `.cmd` / `.bat`, including our `fake_copilot.cmd`
+      test shim): hard limit is **8191 chars** of total command line.
+      This is the binding constraint for our integration tests and the
+      reason the limit exists at all.
+    - `CreateProcessW` directly (the real `copilot.exe` spawned via
+      `asyncio.create_subprocess_exec`, no shell): limit is the
+      Win32 `lpCommandLine` cap of **32767 chars**.
+    - `powershell.exe -File script.ps1 -arg ...`: also 32767 chars.
+    - `powershell.exe -Command "..."` invoked from cmd.exe: capped at
+      8191 chars by cmd.exe's buffer (cmd is the bottleneck, not pwsh).
+
+    In production we never go through cmd.exe, so the real ceiling is
+    32 KB. We still target the 8 KB ceiling because (a) it keeps the
+    test shim reliable, (b) smaller argv = faster CLI parsing on every
+    spawn, and (c) the policy stays human-auditable.
+
+    Sources: Microsoft docs on `CreateProcessW` `lpCommandLine` (32767)
+    and the cmd.exe input-buffer KB article (8191)."""
     flags = build_flags(tmp_path, allow_local_install=True)
     # +1 for the space separator between flags.
     total = sum(len(f) + 1 for f in flags)
     # Hard ceiling: stay under 7 KB so the rest of the argv (prompt
     # paths, model strings, --add-dir, etc.) has at least 1 KB of
-    # headroom before hitting the cmd.exe 8191-char limit.
+    # headroom before hitting the cmd.exe 8191-char limit. (Real prod
+    # spawns get 32767 chars, but the .cmd test shim does not.)
     assert total < 7168, f"guard flags bloated to {total} bytes ({len(flags)} flags)"
 
 

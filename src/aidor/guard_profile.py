@@ -21,6 +21,28 @@ Design notes (re-read the Copilot CLI docs if tempted to "fix" this):
 - We therefore use `shell(cmd:*)` as the broad allow and enumerate the
   specific dangerous sub-invocations (e.g. `git push`, `npm install -g`)
   on the deny side. Every such pairing is covered below.
+
+- Argv size matters on Windows. The matrix is kept compact (~6.6 KB
+  for the full allow+deny set) because of how Windows command lines
+  are sized, NOT because of any Copilot CLI limit:
+
+    * `cmd.exe` (any `.cmd` / `.bat`, including the `fake_copilot.cmd`
+      test shim): hard limit is **8191 chars** of total command line.
+      This is the binding constraint for our integration tests and is
+      what the `test_argv_is_reasonably_compact` ceiling guards.
+    * Direct `CreateProcessW` (real `copilot.exe` spawned via
+      `asyncio.create_subprocess_exec`, no shell): limit is **32767
+      chars** (Win32 `lpCommandLine`).
+    * `powershell.exe -File script.ps1 -arg ...`: also 32767 chars.
+    * `powershell.exe -Command "..."` invoked from cmd.exe: capped at
+      8191 chars by cmd.exe's input buffer (cmd is the bottleneck).
+
+  In production we never go through cmd.exe, so the real ceiling is
+  ~32 KB. We still target the 8 KB ceiling because it keeps the test
+  shim reliable, makes every spawn faster (less string parsing in the
+  CLI), and keeps the policy human-auditable. Sources: Microsoft docs
+  on `CreateProcessW` `lpCommandLine` (32767) and the cmd.exe
+  input-buffer KB article (8191).
 """
 
 from __future__ import annotations
