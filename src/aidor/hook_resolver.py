@@ -78,8 +78,20 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
     if isinstance(raw_args, dict):
         args: dict[str, Any] = raw_args
     elif isinstance(raw_args, str):
-        # Some tools (powershell/bash) deliver the command as a bare string.
-        args = {"command": raw_args}
+        # Copilot sometimes serialises the tool-arg object as a JSON
+        # string (observed for `run_in_terminal` in CLI v1.0.35-2). Try
+        # to parse it; fall back to wrapping the raw string as a bare
+        # command for shells that genuinely deliver a single string.
+        parsed: dict[str, Any] | None = None
+        stripped = raw_args.lstrip()
+        if stripped.startswith("{"):
+            try:
+                candidate = json.loads(raw_args)
+                if isinstance(candidate, dict):
+                    parsed = candidate
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
+        args = parsed if parsed is not None else {"command": raw_args}
     else:
         args = {}
 
@@ -98,7 +110,7 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
     # this, but the CLI's flag grammar can't express most of what we
     # need (see `guard_profile.py` module docstring); the hook is now
     # the sole enforcer of shell policy.
-    if tool in {"bash", "powershell", "shell"}:
+    if tool in {"bash", "powershell", "shell", "run_in_terminal"}:
         decision = _check_shell_allowlist(payload, args)
         if decision is not None:
             return decision

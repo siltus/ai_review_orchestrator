@@ -858,3 +858,52 @@ def test_user_yaml_with_malformed_regex_is_ignored(tmp_path: Path):
     )
     # Bundled defaults still apply.
     assert _deny_decision(tmp_path, "ruff check") is None
+
+
+def test_pre_tool_use_handles_json_string_args(tmp_path: Path):
+    """Copilot CLI v1.0.35-2 sometimes serialises `toolArgs` as a JSON
+    string for `run_in_terminal` (observed in dogfood). The handler
+    must JSON-parse it so the inner `command` field is reachable.
+    Regression: previously the whole JSON blob became the cmd, the
+    splitter could not parse it, and benign chains like
+    `ruff && pytest` were spuriously denied."""
+    from aidor.hook_resolver import _on_pre_tool_use
+
+    payload = {
+        "cwd": str(tmp_path),
+        "toolName": "run_in_terminal",
+        "toolArgs": (
+            '{"command":"python -m ruff check src tests && '
+            'python -m pytest -q","description":"qa","mode":"sync"}'
+        ),
+    }
+    assert _on_pre_tool_use("preToolUse", payload) is None
+
+
+def test_pre_tool_use_treats_run_in_terminal_as_shell(tmp_path: Path):
+    """`run_in_terminal` is the Copilot tool name for the generic
+    shell wrapper; the allowlist check must apply to it too."""
+    from aidor.hook_resolver import _on_pre_tool_use
+
+    payload = {
+        "cwd": str(tmp_path),
+        "toolName": "run_in_terminal",
+        "toolArgs": {"command": "npm install -g typescript"},
+    }
+    decision = _on_pre_tool_use("preToolUse", payload)
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+    assert "allowlist" in decision["permissionDecisionReason"]
+
+
+def test_pre_tool_use_falls_back_to_string_command_for_non_json(tmp_path: Path):
+    """A bare-string toolArgs that is not JSON must still be treated as
+    the shell command (so the legacy contract is preserved)."""
+    from aidor.hook_resolver import _on_pre_tool_use
+
+    payload = {
+        "cwd": str(tmp_path),
+        "toolName": "powershell",
+        "toolArgs": "ruff check src tests",
+    }
+    assert _on_pre_tool_use("preToolUse", payload) is None
