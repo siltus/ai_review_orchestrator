@@ -495,51 +495,66 @@ def _strip_param_prefix(token: str) -> str:
 def _iter_shell_path_candidates(cmd: str) -> Iterator[str]:
     """Yield every token in ``cmd`` that looks like a filesystem path.
 
-    Uses ``shlex.split`` (POSIX-style quoting works for both bash and
-    PowerShell single/double quotes) so quoted paths are recovered
-    intact. Tokens are stripped of surrounding back-ticks/quotes and of
-    PowerShell parameter prefixes before the path heuristic runs.
+    The command is first split on shell statement separators (``;``,
+    ``&&``, ``||``, ``|``, ``&``) so that each clause's first token is
+    correctly recognised as the executable for the
+    ``_FILESYSTEM_CMDLETS`` strict-mode check, and so that a trailing
+    ``;`` doesn't get glued onto a path token (which previously caused
+    legitimate ``cd D:\\repo; pytest -q`` chains to be denied because
+    ``D:\\repo;`` resolved to a non-existent path).
 
-    When the command starts with a known filesystem cmdlet (see
+    Each clause is then tokenised with ``shlex.split`` (POSIX-style
+    quoting works for both bash and PowerShell single/double quotes) so
+    quoted paths are recovered intact. Tokens are stripped of
+    surrounding back-ticks/quotes, of trailing shell punctuation, and
+    of PowerShell parameter prefixes before the path heuristic runs.
+
+    When a clause starts with a known filesystem cmdlet (see
     ``_FILESYSTEM_CMDLETS``) the path heuristic is bypassed: every
     non-flag, non-operator argument is yielded so that bare relative
-    filenames — which may be repo-local symlinks/junctions pointing
-    outside the tree — get resolved and containment-checked.
+    filenames -- which may be repo-local symlinks/junctions pointing
+    outside the tree -- get resolved and containment-checked.
     """
-    try:
-        # posix=False keeps Windows backslashes intact (a POSIX split would
-        # treat `C:\Users\x` as `C:Usersx` because `\` is an escape).
-        # Quotes are preserved on the tokens, so we strip them below.
-        tokens = shlex.split(cmd, posix=False)
-    except ValueError:
-        # Unbalanced quotes etc. — fall back to a permissive split so
-        # we still inspect what we can rather than silently allowing.
-        tokens = cmd.split()
+    # Split the command line on shell statement separators first.
+    # `re.split` keeps clauses; we drop empties.
+    clauses = [c.strip() for c in re.split(r"(?:&&|\|\||;|\||&)", cmd) if c.strip()]
+    for clause in clauses:
+        try:
+            # posix=False keeps Windows backslashes intact (a POSIX split would
+            # treat `C:\Users\x` as `C:Usersx` because `\` is an escape).
+            tokens = shlex.split(clause, posix=False)
+        except ValueError:
+            # Unbalanced quotes etc. -- fall back to a permissive split so
+            # we still inspect what we can rather than silently allowing.
+            tokens = clause.split()
 
-    cleaned: list[str] = []
-    for raw in tokens:
-        token = raw.strip().strip("`").strip("'\"").strip("`")
-        if not token or token in _SHELL_OPERATORS:
+        cleaned: list[str] = []
+        for raw in tokens:
+            # Strip surrounding quotes/backticks AND any trailing shell
+            # punctuation (`;`, `&`, `|`) that may have leaked through if
+            # the splitter missed an unusual separator form.
+            token = raw.strip().strip("`").strip("'\"").strip("`").rstrip(";&|")
+            if not token or token in _SHELL_OPERATORS:
+                continue
+            cleaned.append(token)
+
+        if not cleaned:
             continue
-        cleaned.append(token)
 
-    if not cleaned:
-        return
+        first = cleaned[0]
+        # Strip a path prefix so e.g. `/usr/bin/cat` or `C:\bin\Get-Content.exe`
+        # still maps to its basename for the cmdlet-name check.
+        basename = first.replace("\\", "/").rsplit("/", 1)[-1]
+        if basename.lower().endswith(".exe"):
+            basename = basename[:-4]
+        strict = basename.lower() in _FILESYSTEM_CMDLETS
 
-    first = cleaned[0]
-    # Strip a path prefix so e.g. `/usr/bin/cat` or `C:\bin\Get-Content.exe`
-    # still maps to its basename for the cmdlet-name check.
-    basename = first.replace("\\", "/").rsplit("/", 1)[-1]
-    if basename.lower().endswith(".exe"):
-        basename = basename[:-4]
-    strict = basename.lower() in _FILESYSTEM_CMDLETS
-
-    for token in cleaned[1:]:
-        value = _strip_param_prefix(token).strip("'\"").strip("`")
-        if not value:
-            continue
-        if strict or _looks_like_path(value):
-            yield value
+        for token in cleaned[1:]:
+            value = _strip_param_prefix(token).strip("'\"").strip("`").rstrip(";&|")
+            if not value:
+                continue
+            if strict or _looks_like_path(value):
+                yield value
 
 
 # Environment-variable / shell expansions that resolve to user-profile or

@@ -63,12 +63,88 @@ def test_argv_is_reasonably_compact(tmp_path: Path):
     flags = build_flags(tmp_path, allow_local_install=True)
     # +1 for the space separator between flags.
     total = sum(len(f) + 1 for f in flags)
-    assert total < 4096, f"guard flags bloated to {total} bytes ({len(flags)} flags)"
+    # Hard ceiling: stay under 7 KB so the rest of the argv (prompt
+    # paths, model strings, --add-dir, etc.) has at least 1 KB of
+    # headroom before hitting the cmd.exe 8191-char limit.
+    assert total < 7168, f"guard flags bloated to {total} bytes ({len(flags)} flags)"
 
 
 def test_each_rule_emitted_once(tmp_path: Path):
     flags = build_flags(tmp_path, allow_local_install=True)
     assert len(flags) == len(set(flags)), "duplicate flag emitted"
+
+
+# ---- Directory-navigation prefix (regression: 148+ historical denials) -
+
+
+def test_cd_and_set_location_are_allowed(tmp_path: Path):
+    """Most agent-issued commands are emitted as `cd <repo>; <real cmd>`.
+    Without an allow on the leading `cd` / `Set-Location` / `Push-Location`,
+    the entire chain is denied even though the trailing command would have
+    matched. This was the dominant failure mode in pre-rewrite dogfood
+    transcripts (148 'Permission denied' hits attributable to `cd`)."""
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, _ = _split_allow_deny(flags)
+    for rule in (
+        "shell(cd:*)",
+        "shell(chdir:*)",
+        "shell(Set-Location:*)",
+        "shell(sl:*)",
+        "shell(Push-Location:*)",
+        "shell(pushd:*)",
+        "shell(Pop-Location:*)",
+        "shell(popd:*)",
+    ):
+        assert rule in allow, f"{rule} must be allowed (regression: 148+ historical denials)"
+
+
+# ---- Shell-escape / nested-interpreter denies --------------------------
+#
+# Without these denies an agent could route any forbidden command
+# through a nested interpreter (e.g. `cmd /c "rm -rf .git"` would not
+# match the prefix `shell(rm -rf /)` deny). Every nested-shell entry
+# point must be explicitly closed.
+
+
+def test_nested_shell_escapes_are_denied(tmp_path: Path):
+    flags = build_flags(tmp_path, allow_local_install=False)
+    _, deny = _split_allow_deny(flags)
+    for rule in (
+        "shell(Invoke-Expression)",
+        "shell(Invoke-Expression:*)",
+        "shell(iex)",
+        "shell(iex:*)",
+        "shell(Start-Process)",
+        "shell(Start-Process:*)",
+        "shell(cmd /c)",
+        "shell(cmd /k)",
+        "shell(cmd.exe /c)",
+        "shell(cmd.exe /k)",
+        "shell(powershell -c)",
+        "shell(powershell -Command)",
+        "shell(powershell -EncodedCommand)",
+        "shell(powershell.exe -c)",
+        "shell(powershell.exe -Command)",
+        "shell(pwsh -c)",
+        "shell(pwsh -Command)",
+        "shell(bash -c)",
+        "shell(sh -c)",
+        "shell(zsh -c)",
+    ):
+        assert rule in deny, f"{rule} must be denied to prevent nested-shell escape"
+
+
+def test_aidor_self_cli_allowed_but_run_subcommand_denied(tmp_path: Path):
+    """Agents need `aidor --help`, `aidor doctor`, etc. while validating
+    their own changes, but `aidor run` would spawn a nested orchestrator
+    inside a phase: the child loop would deadlock on the parent's phase
+    watchdog and create an unaudited recursion."""
+    flags = build_flags(tmp_path, allow_local_install=False)
+    allow, deny = _split_allow_deny(flags)
+    assert "shell(aidor:*)" in allow
+    assert "shell(aidor.exe:*)" in allow
+    assert "shell(aidor run)" in deny
+    assert "shell(aidor.exe run)" in deny
 
 
 # ---- Deny-precedence pairings (user-requested) -------------------------

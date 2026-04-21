@@ -338,6 +338,41 @@ def test_shell_escape_blocks_env_var_appdata(tmp_path: Path):
     assert decision["permissionDecision"] == "deny"
 
 
+# ---- shell-statement chaining (regression: trailing-semicolon glue) ----
+
+
+def test_shell_escape_allows_cd_repo_then_chained_command(tmp_path: Path):
+    """`cd D:\\repo; pytest -q` is the dominant agent-issued pattern; the
+    previous tokeniser glued the trailing `;` onto the path token
+    (`D:\\repo;`) and resolved that to a non-existent path outside the
+    repo, denying the entire chain. Splitting on shell statement
+    separators before tokenising fixes this."""
+    decision = _shell_decision(tmp_path, f"cd {tmp_path}; pytest -q")
+    assert decision is None, decision and decision["permissionDecisionReason"]
+
+
+def test_shell_escape_allows_cd_repo_then_chained_command_andand(tmp_path: Path):
+    decision = _shell_decision(tmp_path, f"cd {tmp_path} && pytest -q")
+    assert decision is None, decision and decision["permissionDecisionReason"]
+
+
+def test_shell_escape_still_denies_traversal_in_first_clause(tmp_path: Path):
+    """A bad first clause must still be denied even if the chain
+    contains otherwise-safe later clauses."""
+    decision = _shell_decision(tmp_path, "cd ../outside; pytest -q")
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+
+
+def test_shell_escape_still_denies_traversal_in_later_clause(tmp_path: Path):
+    """A bad later clause must still be denied even when the leading
+    `cd <repo>` is safe."""
+    decision = _shell_decision(tmp_path, f"cd {tmp_path}; cat /etc/passwd")
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+    assert "/etc/passwd" in decision["permissionDecisionReason"]
+
+
 def test_shell_escape_allows_repo_relative_path(tmp_path: Path):
     """A plain relative path inside the repo must be allowed."""
     (tmp_path / "src").mkdir()
