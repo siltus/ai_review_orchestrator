@@ -284,9 +284,7 @@ def abort(
         state.save(state_path)
         console.print("[yellow]marked aborted (wrote .aidor/ABORT + state.json)[/yellow]")
     else:
-        console.print(
-            "[yellow]wrote .aidor/ABORT (no state.json to update)[/yellow]"
-        )
+        console.print("[yellow]wrote .aidor/ABORT (no state.json to update)[/yellow]")
 
 
 def _utcnow() -> str:

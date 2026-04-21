@@ -155,23 +155,18 @@ def _validate_phase_scalars(p: dict, round_index: Any) -> None:
     for field_name in _PHASE_STR_FIELDS:
         if field_name in p and not isinstance(p[field_name], str):
             raise ValueError(
-                f"{prefix} {field_name!r} must be a string, "
-                f"got {type(p[field_name]).__name__}"
+                f"{prefix} {field_name!r} must be a string, got {type(p[field_name]).__name__}"
             )
     if "name" in p and p["name"] not in _VALID_PHASE_NAMES:
         raise ValueError(
-            f"{prefix} 'name' must be one of {sorted(_VALID_PHASE_NAMES)}; "
-            f"got {p['name']!r}"
+            f"{prefix} 'name' must be one of {sorted(_VALID_PHASE_NAMES)}; got {p['name']!r}"
         )
     if "status" in p and p["status"] not in _VALID_PHASE_STATUSES:
         raise ValueError(
-            f"{prefix} 'status' must be one of {sorted(_VALID_PHASE_STATUSES)}; "
-            f"got {p['status']!r}"
+            f"{prefix} 'status' must be one of {sorted(_VALID_PHASE_STATUSES)}; got {p['status']!r}"
         )
     for field_name in _PHASE_OPTIONAL_STR_FIELDS:
-        if field_name in p and p[field_name] is not None and not isinstance(
-            p[field_name], str
-        ):
+        if field_name in p and p[field_name] is not None and not isinstance(p[field_name], str):
             raise ValueError(
                 f"{prefix} {field_name!r} must be a string or null, "
                 f"got {type(p[field_name]).__name__}"
@@ -181,22 +176,20 @@ def _validate_phase_scalars(p: dict, round_index: Any) -> None:
             not isinstance(p[field_name], int) or isinstance(p[field_name], bool)
         ):
             raise ValueError(
-                f"{prefix} {field_name!r} must be an integer, "
-                f"got {type(p[field_name]).__name__}"
+                f"{prefix} {field_name!r} must be an integer, got {type(p[field_name]).__name__}"
             )
     for field_name in _PHASE_NUMERIC_FIELDS:
         if field_name in p and (
-            not isinstance(p[field_name], (int, float))
-            or isinstance(p[field_name], bool)
+            not isinstance(p[field_name], (int, float)) or isinstance(p[field_name], bool)
         ):
             raise ValueError(
-                f"{prefix} {field_name!r} must be a number, "
-                f"got {type(p[field_name]).__name__}"
+                f"{prefix} {field_name!r} must be a number, got {type(p[field_name]).__name__}"
             )
     for field_name in _PHASE_OPTIONAL_NUMERIC_FIELDS:
-        if field_name in p and p[field_name] is not None and (
-            not isinstance(p[field_name], (int, float))
-            or isinstance(p[field_name], bool)
+        if (
+            field_name in p
+            and p[field_name] is not None
+            and (not isinstance(p[field_name], (int, float)) or isinstance(p[field_name], bool))
         ):
             raise ValueError(
                 f"{prefix} {field_name!r} must be a number or null, "
@@ -273,27 +266,26 @@ def _from_plain(data: Any) -> State:
         raise ValueError("state.json 'notes' must be a list")
     for i, n in enumerate(notes):
         if not isinstance(n, str):
-            raise ValueError(
-                f"state.json 'notes[{i}]' must be a string, got {type(n).__name__}"
-            )
+            raise ValueError(f"state.json 'notes[{i}]' must be a string, got {type(n).__name__}")
 
     # Top-level scalar boundary validation (review-0010): a corrupt
     # `current_round: "1"` or `null` must be rejected at load time, not
     # leak out as a TypeError from `current_round - 1` deeper in the run.
     version = data.get("version", 1)
     if not isinstance(version, int) or isinstance(version, bool):
-        raise ValueError(
-            f"state.json 'version' must be an integer, got {type(version).__name__}"
-        )
+        raise ValueError(f"state.json 'version' must be an integer, got {type(version).__name__}")
 
     valid_statuses = {
-        "initializing", "running", "converged", "unconverged", "aborted", "failed",
+        "initializing",
+        "running",
+        "converged",
+        "unconverged",
+        "aborted",
+        "failed",
     }
     status = data.get("status", "initializing")
     if not isinstance(status, str):
-        raise ValueError(
-            f"state.json 'status' must be a string, got {type(status).__name__}"
-        )
+        raise ValueError(f"state.json 'status' must be a string, got {type(status).__name__}")
     if status not in valid_statuses:
         raise ValueError(
             f"state.json 'status' must be one of {sorted(valid_statuses)}; got {status!r}"
@@ -313,13 +305,10 @@ def _from_plain(data: Any) -> State:
     current_round = data.get("current_round", 0)
     if not isinstance(current_round, int) or isinstance(current_round, bool):
         raise ValueError(
-            f"state.json 'current_round' must be an integer, "
-            f"got {type(current_round).__name__}"
+            f"state.json 'current_round' must be an integer, got {type(current_round).__name__}"
         )
     if current_round < 0:
-        raise ValueError(
-            f"state.json 'current_round' must be non-negative, got {current_round}"
-        )
+        raise ValueError(f"state.json 'current_round' must be non-negative, got {current_round}")
 
     return State(
         version=version,

@@ -25,9 +25,7 @@ FOOTER_READY_RE = re.compile(r"<!--\s*AIDOR:PRODUCTION_READY=(true|false)\s*-->"
 # Any line that looks like an AIDOR footer marker. Used to detect stray /
 # duplicate markers anywhere in the document — the contract is that the
 # footer appears exactly once, as the final three lines of the file.
-FOOTER_ANY_RE = re.compile(
-    r"<!--\s*AIDOR:(STATUS|ISSUES|PRODUCTION_READY)=", re.IGNORECASE
-)
+FOOTER_ANY_RE = re.compile(r"<!--\s*AIDOR:(STATUS|ISSUES|PRODUCTION_READY)=", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -94,9 +92,7 @@ def parse_footer(markdown: str) -> ReviewFooter:
     while lines and lines[-1].strip() == "":
         lines.pop()
     if len(lines) < 3:
-        raise FooterParseError(
-            "review file is too short to contain the required AIDOR footer"
-        )
+        raise FooterParseError("review file is too short to contain the required AIDOR footer")
 
     last3 = [ln.strip() for ln in lines[-3:]]
     status_m = FOOTER_STATUS_RE.fullmatch(last3[0])
@@ -114,8 +110,7 @@ def parse_footer(markdown: str) -> ReviewFooter:
     if missing:
         raise FooterParseError(
             "AIDOR footer must be the final three lines of the review, in order "
-            "(STATUS, ISSUES, PRODUCTION_READY); missing or out-of-order: "
-            + ", ".join(missing)
+            "(STATUS, ISSUES, PRODUCTION_READY); missing or out-of-order: " + ", ".join(missing)
         )
 
     # Reject any stray AIDOR marker outside the trailing footer block.
@@ -144,9 +139,7 @@ def parse_footer(markdown: str) -> ReviewFooter:
                 f"got {v!r} ({type(v).__name__})"
             )
         if v < 0:
-            raise FooterParseError(
-                f"AIDOR:ISSUES count for {k!r} must be non-negative; got {v}"
-            )
+            raise FooterParseError(f"AIDOR:ISSUES count for {k!r} must be non-negative; got {v}")
         coerced[str(k)] = v
 
     # Enforce the full footer contract (review-0010): the four baseline
@@ -170,12 +163,9 @@ def parse_footer(markdown: str) -> ReviewFooter:
             "AIDOR:STATUS=CLEAN is invalid when critical or major issues are "
             f"non-zero (critical={coerced['critical']}, major={coerced['major']})"
         )
-    if production_ready and (
-        status != "CLEAN" or coerced["critical"] > 0 or coerced["major"] > 0
-    ):
+    if production_ready and (status != "CLEAN" or coerced["critical"] > 0 or coerced["major"] > 0):
         raise FooterParseError(
-            "AIDOR:PRODUCTION_READY=true is invalid unless STATUS=CLEAN and "
-            "critical=0 and major=0"
+            "AIDOR:PRODUCTION_READY=true is invalid unless STATUS=CLEAN and critical=0 and major=0"
         )
 
     return ReviewFooter(

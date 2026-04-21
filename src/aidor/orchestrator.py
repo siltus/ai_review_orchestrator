@@ -324,9 +324,7 @@ class Orchestrator:
                     except FooterParseError as exc:
                         gate_footer_error = f"readiness-gate footer invalid: {exc}"
                     except OSError as exc:
-                        gate_footer_error = (
-                            f"readiness-gate artefact unreadable: {exc}"
-                        )
+                        gate_footer_error = f"readiness-gate artefact unreadable: {exc}"
                 if gate_footer and gate_footer.is_clean_and_ready:
                     self.state.status = "converged"
                     self._save_state()
@@ -339,17 +337,14 @@ class Orchestrator:
                     footer = gate_footer
                     review_path = gate_path  # type: ignore[assignment]
                     self._save_state()
-                    self._note(
-                        f"round {round_index}: readiness gate found issues; continuing"
-                    )
+                    self._note(f"round {round_index}: readiness gate found issues; continuing")
                 else:
                     # Mirror the primary-review failure path (see below):
                     # an unparseable readiness-gate footer is a control-flow
                     # hazard — we must not silently fall back to the stale
                     # original clean review and tell the coder to fix it.
                     self._note(
-                        f"round {round_index}: {gate_footer_error}; "
-                        "treating round as failed"
+                        f"round {round_index}: {gate_footer_error}; treating round as failed"
                     )
                     # review-0014: keep the persisted phase status in sync
                     # with the round outcome so `state.json` cannot show a

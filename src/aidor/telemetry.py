@@ -77,12 +77,7 @@ def parse_otel_file(path: Path) -> PhaseMetrics:
                 attrs = rec.get("attributes") or rec.get("attrs") or {}
                 if not isinstance(attrs, dict):
                     continue
-                name = (
-                    rec.get("name")
-                    or rec.get("spanName")
-                    or rec.get("operation")
-                    or ""
-                )
+                name = rec.get("name") or rec.get("spanName") or rec.get("operation") or ""
                 lname = name.lower()
 
                 ti = attrs.get("gen_ai.usage.input_tokens")
