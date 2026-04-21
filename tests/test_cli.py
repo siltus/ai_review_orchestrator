@@ -270,3 +270,86 @@ def test_doctor_windows_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         ],
     )
     assert "Windows wake-lock" in result.stdout
+
+
+# ---- doctor: Copilot CLI version floor (review-0001) --------------------
+
+
+def _make_subprocess_run(stdout: str, returncode: int = 0):
+    """Return a fake ``subprocess.run`` that yields the given version stdout.
+
+    Used to exercise the ``aidor doctor`` version-floor branch without
+    depending on a real ``copilot`` binary being present on PATH.
+    """
+
+    class _Completed:
+        def __init__(self) -> None:
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = returncode
+
+    def _fake_run(*_args, **_kwargs):
+        return _Completed()
+
+    return _fake_run
+
+
+def test_doctor_rejects_old_copilot_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Regression (review-0001): `aidor doctor` must enforce the documented
+    minimum Copilot CLI version (1.0.32+). An older version must cause a
+    non-zero exit so operators aren't fooled into thinking a stale CLI is
+    healthy."""
+    import subprocess
+
+    import aidor.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: "/fake/copilot")
+    monkeypatch.setattr(subprocess, "run", _make_subprocess_run("copilot 1.0.31"))
+    result = runner.invoke(app, ["doctor", "--repo", str(tmp_path)])
+    assert result.exit_code == 2, result.stdout
+    assert "copilot >= 1.0.32" in result.stdout
+    assert "installed=1.0.31" in result.stdout
+
+
+def test_doctor_accepts_new_enough_copilot_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Regression (review-0001): a Copilot CLI at or above the minimum must
+    PASS the version-floor check."""
+    import subprocess
+
+    import aidor.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: "/fake/copilot")
+    monkeypatch.setattr(subprocess, "run", _make_subprocess_run("copilot 1.0.35-2"))
+    result = runner.invoke(app, ["doctor", "--repo", str(tmp_path)])
+    assert "copilot >= 1.0.32" in result.stdout
+    assert "installed=1.0.35" in result.stdout
+    # Line must be reported OK (green), not FAIL. The check helper prefixes
+    # FAIL only on failures, so absence of "FAIL copilot >= 1.0.32" is the
+    # signal we want.
+    assert "FAIL copilot >= 1.0.32" not in result.stdout
+
+
+def test_doctor_flags_unparseable_copilot_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Regression (review-0001): if `copilot --version` prints something we
+    can't parse, doctor must fail the version-floor check instead of
+    silently passing."""
+    import subprocess
+
+    import aidor.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: "/fake/copilot")
+    monkeypatch.setattr(subprocess, "run", _make_subprocess_run("copilot (unknown build)"))
+    result = runner.invoke(app, ["doctor", "--repo", str(tmp_path)])
+    assert result.exit_code == 2, result.stdout
+    assert "could not parse version" in result.stdout
+
+
+def test_parse_copilot_version_helper():
+    """Unit coverage for the version-parsing helper itself."""
+    from aidor.cli import _parse_copilot_version
+
+    assert _parse_copilot_version("copilot 1.0.35") == (1, 0, 35)
+    assert _parse_copilot_version("1.0.35-2") == (1, 0, 35)
+    assert _parse_copilot_version("version: 2.14.0 (rc1)") == (2, 14, 0)
+    assert _parse_copilot_version("no version here") is None
+    assert _parse_copilot_version("") is None

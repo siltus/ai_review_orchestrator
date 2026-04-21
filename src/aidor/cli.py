@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -31,6 +32,25 @@ app = typer.Typer(
 )
 
 console = Console()
+
+
+# Minimum GitHub Copilot CLI version aidor is tested against. Keep in sync
+# with the prerequisites table in GETTING_STARTED.md. `aidor doctor` fails
+# when the installed CLI is below this floor because older builds lack the
+# hook / JSON / agent behaviour the orchestrator depends on.
+MIN_COPILOT_VERSION: tuple[int, int, int] = (1, 0, 32)
+_COPILOT_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
+def _parse_copilot_version(text: str) -> tuple[int, int, int] | None:
+    """Extract the first ``MAJOR.MINOR.PATCH`` triple from Copilot's version
+    output. Copilot has shipped strings like ``copilot 1.0.35`` and
+    ``1.0.35-2`` across releases; we only care about the leading numeric
+    triple. Returns ``None`` when no recognisable version is present."""
+    match = _COPILOT_VERSION_RE.search(text or "")
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
 def _load_state_or_exit(state_path: Path) -> State:
@@ -225,9 +245,24 @@ def doctor(
             out = subprocess.run(
                 [copilot_path, "--version"], capture_output=True, text=True, timeout=10
             )
-            check(
-                "copilot --version", out.returncode == 0, out.stdout.strip() or out.stderr.strip()
-            )
+            version_text = out.stdout.strip() or out.stderr.strip()
+            check("copilot --version", out.returncode == 0, version_text)
+            if out.returncode == 0:
+                parsed = _parse_copilot_version(version_text)
+                min_str = ".".join(str(n) for n in MIN_COPILOT_VERSION)
+                if parsed is None:
+                    check(
+                        f"copilot >= {min_str}",
+                        False,
+                        f"could not parse version from {version_text!r}",
+                    )
+                else:
+                    parsed_str = ".".join(str(n) for n in parsed)
+                    check(
+                        f"copilot >= {min_str}",
+                        parsed >= MIN_COPILOT_VERSION,
+                        f"installed={parsed_str}",
+                    )
         except Exception as exc:  # pragma: no cover
             check("copilot --version", False, str(exc))
     check("repo is a directory", repo.is_dir(), str(repo))
