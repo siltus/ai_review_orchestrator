@@ -22,6 +22,13 @@ FOOTER_STATUS_RE = re.compile(r"<!--\s*AIDOR:STATUS=(CLEAN|ISSUES_FOUND)\s*-->",
 FOOTER_ISSUES_RE = re.compile(r"<!--\s*AIDOR:ISSUES=(\{[^}]*\})\s*-->", re.IGNORECASE)
 FOOTER_READY_RE = re.compile(r"<!--\s*AIDOR:PRODUCTION_READY=(true|false)\s*-->", re.IGNORECASE)
 
+# Any line that looks like an AIDOR footer marker. Used to detect stray /
+# duplicate markers anywhere in the document — the contract is that the
+# footer appears exactly once, as the final three lines of the file.
+FOOTER_ANY_RE = re.compile(
+    r"<!--\s*AIDOR:(STATUS|ISSUES|PRODUCTION_READY)=", re.IGNORECASE
+)
+
 
 @dataclass(frozen=True)
 class ReviewFooter:
@@ -67,17 +74,59 @@ class FooterParseError(ValueError):
 
 
 def parse_footer(markdown: str) -> ReviewFooter:
-    """Extract the AIDOR footer. Raises FooterParseError on missing/invalid."""
-    status_m = FOOTER_STATUS_RE.search(markdown)
-    issues_m = FOOTER_ISSUES_RE.search(markdown)
-    ready_m = FOOTER_READY_RE.search(markdown)
+    """Extract the AIDOR footer.
+
+    The repo contract requires the review file to **end** with exactly three
+    AIDOR footer lines, in this order:
+
+        <!-- AIDOR:STATUS=... -->
+        <!-- AIDOR:ISSUES=... -->
+        <!-- AIDOR:PRODUCTION_READY=... -->
+
+    Any other AIDOR marker elsewhere in the document (a stale prior footer,
+    a duplicate, or a footer-shaped example in the prose) is rejected.
+    Trailing blank lines after the footer are tolerated; non-blank trailing
+    text is not.
+    """
+    # Split into lines, dropping any trailing blank lines so that the
+    # "last three lines" check is robust to a trailing newline.
+    lines = markdown.splitlines()
+    while lines and lines[-1].strip() == "":
+        lines.pop()
+    if len(lines) < 3:
+        raise FooterParseError(
+            "review file is too short to contain the required AIDOR footer"
+        )
+
+    last3 = [ln.strip() for ln in lines[-3:]]
+    status_m = FOOTER_STATUS_RE.fullmatch(last3[0])
+    issues_m = FOOTER_ISSUES_RE.fullmatch(last3[1])
+    ready_m = FOOTER_READY_RE.fullmatch(last3[2])
     missing = [
         name
-        for name, m in (("STATUS", status_m), ("ISSUES", issues_m), ("PRODUCTION_READY", ready_m))
+        for name, m in (
+            ("STATUS", status_m),
+            ("ISSUES", issues_m),
+            ("PRODUCTION_READY", ready_m),
+        )
         if m is None
     ]
     if missing:
-        raise FooterParseError(f"review file is missing AIDOR footer fields: {', '.join(missing)}")
+        raise FooterParseError(
+            "AIDOR footer must be the final three lines of the review, in order "
+            "(STATUS, ISSUES, PRODUCTION_READY); missing or out-of-order: "
+            + ", ".join(missing)
+        )
+
+    # Reject any stray AIDOR marker outside the trailing footer block.
+    body_lines = lines[:-3]
+    for idx, ln in enumerate(body_lines):
+        if FOOTER_ANY_RE.search(ln):
+            raise FooterParseError(
+                f"unexpected AIDOR footer marker at line {idx + 1}; the footer "
+                "must appear exactly once, as the final three lines of the file"
+            )
+
     try:
         assert issues_m is not None  # for type checker; already validated above
         issues = json.loads(issues_m.group(1))
@@ -85,11 +134,54 @@ def parse_footer(markdown: str) -> ReviewFooter:
         raise FooterParseError(f"AIDOR:ISSUES is not valid JSON: {exc}") from exc
     if not isinstance(issues, dict):
         raise FooterParseError("AIDOR:ISSUES must be a JSON object")
+    coerced: dict[str, int] = {}
+    for k, v in issues.items():
+        # Booleans are a subclass of int in Python; reject them explicitly so
+        # `{"major": true}` doesn't silently parse as 1.
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise FooterParseError(
+                f"AIDOR:ISSUES count for {k!r} must be a non-negative integer; "
+                f"got {v!r} ({type(v).__name__})"
+            )
+        if v < 0:
+            raise FooterParseError(
+                f"AIDOR:ISSUES count for {k!r} must be non-negative; got {v}"
+            )
+        coerced[str(k)] = v
+
+    # Enforce the full footer contract (review-0010): the four baseline
+    # severities must be present, and STATUS / PRODUCTION_READY must not
+    # contradict the counts. A malformed reviewer footer must NEVER be
+    # able to satisfy the convergence gate.
+    required_severities = ("critical", "major", "minor", "nit")
+    missing_sev = [s for s in required_severities if s not in coerced]
+    if missing_sev:
+        raise FooterParseError(
+            "AIDOR:ISSUES must include all baseline severities "
+            f"({', '.join(required_severities)}); missing: {', '.join(missing_sev)}"
+        )
+
     assert status_m is not None and ready_m is not None
+    status = status_m.group(1).upper()
+    production_ready = ready_m.group(1).lower() == "true"
+
+    if status == "CLEAN" and (coerced["critical"] > 0 or coerced["major"] > 0):
+        raise FooterParseError(
+            "AIDOR:STATUS=CLEAN is invalid when critical or major issues are "
+            f"non-zero (critical={coerced['critical']}, major={coerced['major']})"
+        )
+    if production_ready and (
+        status != "CLEAN" or coerced["critical"] > 0 or coerced["major"] > 0
+    ):
+        raise FooterParseError(
+            "AIDOR:PRODUCTION_READY=true is invalid unless STATUS=CLEAN and "
+            "critical=0 and major=0"
+        )
+
     return ReviewFooter(
-        status=status_m.group(1).upper(),
-        issues={str(k): int(v) for k, v in issues.items()},
-        production_ready=ready_m.group(1).lower() == "true",
+        status=status,
+        issues=coerced,
+        production_ready=production_ready,
     )
 
 

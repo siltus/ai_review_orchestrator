@@ -2,8 +2,17 @@
 
 Writes / refreshes:
   - AGENTS.md                                  (managed block only)
-  - .github/agents/aidor-coder.md              (created if absent)
-  - .github/agents/aidor-reviewer.md           (created if absent)
+  - .github/agents/aidor-coder.md              (refreshed if stale; the
+                                                packaged template is the
+                                                source of truth)
+  - .github/agents/aidor-reviewer.md           (refreshed if stale; the
+                                                packaged template is the
+                                                source of truth — these are
+                                                operational instructions the
+                                                orchestrator hands to the
+                                                model, not user content, so
+                                                bootstrap keeps them in sync
+                                                with the installed wheel)
   - .github/hooks/aidor.json                   (always overwritten; contains
                                                 the absolute path of the Python
                                                 interpreter that installed
@@ -12,7 +21,12 @@ Writes / refreshes:
   - .aidor/{reviews,fixes,transcripts,logs}/   (created)
   - .aidor/allowed_exceptions.yml              (seeded if absent)
   - .aidor/config.snapshot.toml                (always overwritten)
-  - .gitignore entry for .aidor/               (appended if missing)
+  - .gitignore entries for `.aidor/` and `.github/hooks/aidor.json`
+                                               (appended if missing; the
+                                                hooks file contains a
+                                                machine-specific absolute
+                                                Python path and must not
+                                                be committed)
 
 Template sources live under `aidor/agent_templates/` and `aidor/policies/`
 (shipped with the wheel).
@@ -23,6 +37,7 @@ from __future__ import annotations
 import json
 import sys
 from importlib import resources
+from pathlib import Path
 
 from aidor.config import RunConfig
 
@@ -105,13 +120,22 @@ def bootstrap(config: RunConfig) -> list[str]:
             actions.append(f"created {d.relative_to(repo).as_posix()}/")
 
     # ---- Custom agent files ----------------------------------------------
+    # These hold the operational instructions the orchestrator passes to the
+    # model. They MUST stay in sync with the packaged templates, otherwise an
+    # already-bootstrapped repo can keep running stale instructions while the
+    # orchestrator's parser enforces a newer contract (see review-0011). Any
+    # local edits to these files are overwritten on the next bootstrap by
+    # design: customise the packaged template (and bump the wheel) instead.
     agents_dir = repo / ".github" / "agents"
     for name in ("aidor-coder.md", "aidor-reviewer.md"):
         dest = agents_dir / name
+        content = _read_template(f"agent_templates/{name}")
         if not dest.exists():
-            content = _read_template(f"agent_templates/{name}")
             dest.write_text(content, encoding="utf-8")
             actions.append(f"wrote {dest.relative_to(repo).as_posix()}")
+        elif dest.read_text(encoding="utf-8") != content:
+            dest.write_text(content, encoding="utf-8")
+            actions.append(f"refreshed {dest.relative_to(repo).as_posix()} (stale)")
 
     # ---- Hooks file -------------------------------------------------------
     hooks_path = repo / ".github" / "hooks" / "aidor.json"
@@ -141,21 +165,41 @@ def bootstrap(config: RunConfig) -> list[str]:
     config.config_snapshot_path.write_text(_render_config_snapshot(config), encoding="utf-8")
     actions.append(f"wrote {config.config_snapshot_path.relative_to(repo).as_posix()}")
 
-    # ---- .gitignore entry for .aidor/ -------------------------------------
+    # ---- .gitignore entries -----------------------------------------------
+    # Both `.aidor/` (run artefacts) and `.github/hooks/aidor.json` (machine-
+    # specific: bakes the absolute path of this Python interpreter) must be
+    # ignored. Bootstrap manages both so a fresh target repo cannot
+    # accidentally commit either one.
     gi = repo / ".gitignore"
-    needed = ".aidor/"
-    if gi.exists():
-        lines = gi.read_text(encoding="utf-8").splitlines()
-        if needed not in (ln.strip() for ln in lines):
-            gi.write_text(
-                gi.read_text(encoding="utf-8").rstrip() + f"\n{needed}\n",
+    needed_entries = (".aidor/", ".github/hooks/aidor.json")
+    gi_actions = _ensure_gitignore_entries(gi, needed_entries)
+    actions.extend(gi_actions)
+
+    return actions
+
+
+def _ensure_gitignore_entries(gitignore: Path, entries: tuple[str, ...]) -> list[str]:
+    """Make sure every entry in `entries` appears as a line in `.gitignore`.
+
+    Creates the file if missing. Returns a list of human-readable actions
+    describing what changed (empty if nothing changed).
+    """
+    actions: list[str] = []
+    if gitignore.exists():
+        existing = gitignore.read_text(encoding="utf-8")
+        present = {ln.strip() for ln in existing.splitlines()}
+        missing = [e for e in entries if e not in present]
+        if missing:
+            suffix = "\n".join(missing) + "\n"
+            gitignore.write_text(
+                existing.rstrip() + "\n" + suffix,
                 encoding="utf-8",
             )
-            actions.append("appended .aidor/ to .gitignore")
+            for e in missing:
+                actions.append(f"appended {e} to .gitignore")
     else:
-        gi.write_text(f"{needed}\n", encoding="utf-8")
-        actions.append("created .gitignore with .aidor/")
-
+        gitignore.write_text("\n".join(entries) + "\n", encoding="utf-8")
+        actions.append("created .gitignore with " + ", ".join(entries))
     return actions
 
 

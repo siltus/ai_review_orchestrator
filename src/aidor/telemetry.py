@@ -9,6 +9,16 @@ We only care about a handful of attributes per invocation:
     - github.copilot.cost
     - github.copilot.tool.call.count (or execute_tool span count)
 Turn counts / premium requests are captured opportunistically if present.
+
+Span shapes seen in the wild (Copilot CLI 1.0.32+):
+
+* Multiple ``chat <model>`` spans per phase, each carrying its own
+  ``gen_ai.usage.input_tokens`` / ``gen_ai.usage.output_tokens`` /
+  ``github.copilot.cost``. Tokens and cost in each chat span describe **that
+  turn only**, so per-phase totals are the *sum* across chat spans.
+* Optionally a single outer ``invoke_agent`` span carrying the canonical
+  aggregate. When present, this is preferred over the chat-span sum.
+* ``execute_tool …`` spans, one per tool call.
 """
 
 from __future__ import annotations
@@ -37,9 +47,22 @@ class PhaseMetrics:
 
 def parse_otel_file(path: Path) -> PhaseMetrics:
     """Best-effort parse. Missing file or malformed lines → zeros; never raises."""
-    metrics = PhaseMetrics()
     if not path.exists():
-        return metrics
+        return PhaseMetrics()
+
+    chat_tokens_in = 0
+    chat_tokens_out = 0
+    chat_cost = 0.0
+    chat_turns = 0
+
+    invoke_tokens_in = 0
+    invoke_tokens_out = 0
+    invoke_cost = 0.0
+    invoke_seen = False
+
+    tool_calls = 0
+    turn_count_attr = 0
+
     try:
         with path.open("r", encoding="utf-8") as f:
             for line in f:
@@ -50,40 +73,63 @@ def parse_otel_file(path: Path) -> PhaseMetrics:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                _absorb(metrics, rec)
+
+                attrs = rec.get("attributes") or rec.get("attrs") or {}
+                if not isinstance(attrs, dict):
+                    continue
+                name = (
+                    rec.get("name")
+                    or rec.get("spanName")
+                    or rec.get("operation")
+                    or ""
+                )
+                lname = name.lower()
+
+                ti = attrs.get("gen_ai.usage.input_tokens")
+                to = attrs.get("gen_ai.usage.output_tokens")
+                cost = attrs.get("github.copilot.cost")
+
+                if "invoke_agent" in lname:
+                    invoke_seen = True
+                    if isinstance(ti, (int, float)):
+                        invoke_tokens_in = max(invoke_tokens_in, int(ti))
+                    if isinstance(to, (int, float)):
+                        invoke_tokens_out = max(invoke_tokens_out, int(to))
+                    if isinstance(cost, (int, float)):
+                        invoke_cost = max(invoke_cost, float(cost))
+                elif lname.startswith("chat") or "chat " in lname:
+                    if isinstance(ti, (int, float)):
+                        chat_tokens_in += int(ti)
+                    if isinstance(to, (int, float)):
+                        chat_tokens_out += int(to)
+                    if isinstance(cost, (int, float)):
+                        chat_cost += float(cost)
+                    chat_turns += 1
+
+                t = attrs.get("github.copilot.turn_count")
+                if isinstance(t, (int, float)):
+                    turn_count_attr = max(turn_count_attr, int(t))
+
+                if "execute_tool" in lname:
+                    tool_calls += 1
     except OSError:
-        return metrics
-    return metrics
+        return PhaseMetrics()
 
+    if invoke_seen:
+        tokens_in = invoke_tokens_in
+        tokens_out = invoke_tokens_out
+        cost_total = invoke_cost
+    else:
+        tokens_in = chat_tokens_in
+        tokens_out = chat_tokens_out
+        cost_total = chat_cost
 
-def _absorb(m: PhaseMetrics, rec: dict) -> None:
-    # Handle both OTel-SDK shapes and the simpler Copilot file-exporter shape.
-    # Spans are often under rec["attributes"] as a flat dict.
-    attrs = rec.get("attributes") or rec.get("attrs") or {}
-    if not isinstance(attrs, dict):
-        return
+    turns = turn_count_attr if turn_count_attr else chat_turns
 
-    name = rec.get("name") or rec.get("spanName") or rec.get("operation") or ""
-
-    # Token counts (chat span + invoke_agent span both carry these).
-    ti = attrs.get("gen_ai.usage.input_tokens")
-    to = attrs.get("gen_ai.usage.output_tokens")
-    if isinstance(ti, (int, float)) and isinstance(to, (int, float)):
-        # Only count at the outermost level per the docs: invoke_agent carries
-        # totals for all turns. If both chat + invoke_agent appear, invoke_agent
-        # is the truth. Heuristic: prefer invoke_agent, ignore chat spans
-        # unless we haven't seen invoke_agent yet.
-        if "invoke_agent" in name.lower() or (m.tokens_in == 0 and m.tokens_out == 0):
-            m.tokens_in = max(m.tokens_in, int(ti))
-            m.tokens_out = max(m.tokens_out, int(to))
-
-    cost = attrs.get("github.copilot.cost")
-    if isinstance(cost, (int, float)) and "invoke_agent" in name.lower():
-        m.cost = max(m.cost, float(cost))
-
-    turns = attrs.get("github.copilot.turn_count")
-    if isinstance(turns, (int, float)):
-        m.turns = max(m.turns, int(turns))
-
-    if "execute_tool" in name.lower():
-        m.tool_calls += 1
+    return PhaseMetrics(
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        cost=cost_total,
+        tool_calls=tool_calls,
+        turns=turns,
+    )

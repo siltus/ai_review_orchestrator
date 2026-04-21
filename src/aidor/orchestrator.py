@@ -16,6 +16,7 @@ import signal
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import FrameType
 
 from rich.console import Console
 from rich.prompt import Prompt
@@ -24,7 +25,13 @@ from aidor.bootstrap import bootstrap
 from aidor.config import RunConfig
 from aidor.phase import PhaseEvent, PhaseResult, PhaseRunner
 from aidor.review_store import FooterParseError, ReviewFooter, ReviewStore, parse_footer
-from aidor.state import PhaseRecord, RestartRecord, RoundRecord, State
+from aidor.state import (
+    PhaseRecord,
+    RestartRecord,
+    RoundRecord,
+    State,
+    validate_artifact_paths_within_repo,
+)
 from aidor.summary import print_summary, write_summary_md
 from aidor.wake_lock import WakeLock
 
@@ -33,6 +40,31 @@ log = logging.getLogger(__name__)
 
 CODER_AGENT = "aidor-coder"
 REVIEWER_AGENT = "aidor-reviewer"
+
+
+# -- Shared helpers ------------------------------------------------------------
+
+
+def write_abort_marker(aidor_dir: Path, via: str) -> bool:
+    """Write `.aidor/ABORT` so the phase watchdog and hook resolver can
+    observe the abort. Shared between the signal path (POSIX and Windows)
+    and the CLI's `KeyboardInterrupt` path so a Ctrl-C on any platform
+    honours the documented abort contract. Returns True iff the marker
+    was written by this call (idempotent when the marker already exists).
+    """
+    try:
+        aidor_dir.mkdir(parents=True, exist_ok=True)
+        marker = aidor_dir / "ABORT"
+        if marker.exists():
+            return False
+        marker.write_text(
+            f"aborted_via={via} at={_utcnow()}\n",
+            encoding="utf-8",
+        )
+        return True
+    except OSError:  # pragma: no cover - defensive
+        log.exception("failed to write .aidor/ABORT (via=%s)", via)
+        return False
 
 
 # -- Prompt templates ----------------------------------------------------------
@@ -117,7 +149,24 @@ class Orchestrator:
 
         # Load or initialise state.
         if self.config.resume and self.config.state_path.exists():
-            self.state = State.load(self.config.state_path)
+            try:
+                self.state = State.load(self.config.state_path)
+            except (ValueError, OSError) as exc:
+                self.console.print(
+                    f"[red]could not resume: {self.config.state_path} is corrupt "
+                    f"or unreadable ({exc})[/red]"
+                )
+                return 2
+            # review-0013: containment check on persisted artifact paths.
+            # A corrupt or hand-edited state.json must not be allowed to
+            # point the orchestrator at files outside the repo root.
+            path_err = validate_artifact_paths_within_repo(self.state, self.config.repo)
+            if path_err:
+                self.console.print(
+                    f"[red]could not resume: {self.config.state_path} references "
+                    f"an artefact outside the repository ({path_err})[/red]"
+                )
+                return 2
             self.console.print(f"[dim]resumed from round {self.state.current_round}[/dim]")
         else:
             self.state = State(started_at=_utcnow(), status="running")
@@ -157,7 +206,15 @@ class Orchestrator:
     # ---- Main loop ----------------------------------------------------------
 
     async def _main_loop(self) -> int:
-        start_round = self.state.current_round if self.state.current_round > 0 else 0
+        # `current_round` is persisted as the index of the round currently in
+        # flight (set by `State.start_round()` *before* its phases run). On
+        # `--resume`, we must therefore re-enter that same round so any
+        # incomplete phases can finish; starting at `current_round` itself
+        # would skip an unfinished round entirely. The per-phase
+        # `_get_or_create_phase` + `status == "done"` checks below handle the
+        # case where the round was actually fully complete and we should fall
+        # straight through to the next one.
+        start_round = max(0, self.state.current_round - 1)
 
         for i in range(start_round, self.config.max_rounds):
             round_index = i + 1
@@ -194,17 +251,35 @@ class Orchestrator:
                     return 130
                 if not review_path.exists():
                     self._note(f"round {round_index}: reviewer produced no file; aborting")
+                    # review-0014: do not leave the phase persisted as
+                    # `done` when its required artefact is missing — that
+                    # makes `state.json` internally inconsistent and turns
+                    # `--resume` into a repeat clean failure.
+                    review_phase.status = "failed"
                     self.state.status = "failed"
+                    self._save_state()
                     return 2
 
             # Parse footer.
-            review_path = Path(review_phase.artifact_path)
             footer: ReviewFooter | None
-            try:
-                footer = parse_footer(review_path.read_text(encoding="utf-8"))
-            except (FooterParseError, OSError) as exc:
-                self._note(f"round {round_index}: footer parse failed: {exc}")
+            review_path_str = review_phase.artifact_path
+            if not review_path_str:
+                # Defensive: a persisted "done" review phase with no
+                # `artifact_path` (stale/manual edit, future migration slip)
+                # would otherwise crash on `Path(None)`. Treat it like an
+                # unparseable footer so the round fails cleanly below.
+                self._note(
+                    f"round {round_index}: persisted review phase missing "
+                    "artifact_path; treating footer as unparseable"
+                )
                 footer = None
+            else:
+                review_path = Path(review_path_str)
+                try:
+                    footer = parse_footer(review_path.read_text(encoding="utf-8"))
+                except (FooterParseError, OSError) as exc:
+                    self._note(f"round {round_index}: footer parse failed: {exc}")
+                    footer = None
             rnd.footer = footer.to_dict() if footer else None
             self._save_state()
 
@@ -216,6 +291,7 @@ class Orchestrator:
                     "[green]reviewer says CLEAN + PRODUCTION_READY — running readiness gate[/green]"
                 )
                 gate_phase = _get_or_create_phase(rnd, "readiness_gate", "reviewer")
+                gate_path: Path | None = None
                 if gate_phase.status != "done":
                     gate_path = self.review_store.next_review_path()
                     gate_phase.artifact_path = str(gate_path)
@@ -231,34 +307,81 @@ class Orchestrator:
                     if result.stop_reason == "aborted":
                         self.state.status = "aborted"
                         return 130
-                    gate_footer: ReviewFooter | None = None
-                    if gate_path.exists():
-                        try:
-                            gate_footer = parse_footer(gate_path.read_text(encoding="utf-8"))
-                        except FooterParseError as exc:
-                            self._note(f"round {round_index}: readiness-gate footer invalid: {exc}")
-                    if gate_footer and gate_footer.is_clean_and_ready:
-                        self.state.status = "converged"
-                        self._save_state()
-                        self.console.print("[bold green]CONVERGED[/bold green]")
-                        return 0
-                    if gate_footer:
-                        rnd.footer = gate_footer.to_dict()
-                        # Route the coder to the GATE'S review (the original
-                        # one was clean; only the gate found new issues).
-                        footer = gate_footer
-                        review_path = gate_path
-                    self._note(f"round {round_index}: readiness gate found issues; continuing")
+                elif gate_phase.artifact_path:
+                    # Resume path: the gate already ran in a prior process. Use
+                    # the gate's own review file as the authoritative reviewer
+                    # artefact for this round, NOT the (now-stale) original
+                    # clean review.
+                    gate_path = Path(gate_phase.artifact_path)
+
+                gate_footer: ReviewFooter | None = None
+                gate_footer_error: str | None = None
+                if gate_path is None or not gate_path.exists():
+                    gate_footer_error = "readiness-gate artefact missing"
+                else:
+                    try:
+                        gate_footer = parse_footer(gate_path.read_text(encoding="utf-8"))
+                    except FooterParseError as exc:
+                        gate_footer_error = f"readiness-gate footer invalid: {exc}"
+                    except OSError as exc:
+                        gate_footer_error = (
+                            f"readiness-gate artefact unreadable: {exc}"
+                        )
+                if gate_footer and gate_footer.is_clean_and_ready:
+                    self.state.status = "converged"
+                    self._save_state()
+                    self.console.print("[bold green]CONVERGED[/bold green]")
+                    return 0
+                if gate_footer:
+                    rnd.footer = gate_footer.to_dict()
+                    # Route the coder to the GATE'S review (the original
+                    # one was clean; only the gate found new issues).
+                    footer = gate_footer
+                    review_path = gate_path  # type: ignore[assignment]
+                    self._save_state()
+                    self._note(
+                        f"round {round_index}: readiness gate found issues; continuing"
+                    )
+                else:
+                    # Mirror the primary-review failure path (see below):
+                    # an unparseable readiness-gate footer is a control-flow
+                    # hazard — we must not silently fall back to the stale
+                    # original clean review and tell the coder to fix it.
+                    self._note(
+                        f"round {round_index}: {gate_footer_error}; "
+                        "treating round as failed"
+                    )
+                    # review-0014: keep the persisted phase status in sync
+                    # with the round outcome so `state.json` cannot show a
+                    # `done` readiness gate with no usable artefact.
+                    gate_phase.status = "failed"
+                    self.state.status = "failed"
+                    self._save_state()
+                    return 2
 
             # Otherwise, run the fix phase.
             if footer is None:
                 self._note(f"round {round_index}: review footer missing; treating as failure")
+                # review-0014/0015: keep the persisted phase status in
+                # sync with the round outcome. Whether the artefact was
+                # missing, unreadable, or present-but-malformed, the
+                # round is failing because the review phase did not
+                # produce a usable footer — so `state.json` must not
+                # show a `done` review phase, or `--resume` will skip
+                # straight back into the same clean failure loop
+                # instead of re-running the review.
+                review_phase.status = "failed"
                 self.state.status = "failed"
+                self._save_state()
                 return 2
 
             fix_phase = _get_or_create_phase(rnd, "fix", "coder")
             if fix_phase.status != "done":
-                fixes_path = self.review_store.next_fix_path()
+                fixes_path = (
+                    Path(fix_phase.artifact_path)
+                    if fix_phase.artifact_path
+                    else self.review_store.next_fix_path()
+                )
                 fix_phase.artifact_path = str(fixes_path)
                 prompt = FIX_PROMPT.format(
                     round_index=round_index,
@@ -276,6 +399,47 @@ class Orchestrator:
                 if result.stop_reason == "aborted":
                     self.state.status = "aborted"
                     return 130
+                # review-0013: mirror the reviewer-side artefact enforcement
+                # for the fix phase. PhaseRunner can return idle/timeout/error
+                # which sets status="failed"; or the coder may end_turn
+                # without actually writing the fixes file. Either way the
+                # next reviewer prompt would point at a missing/empty
+                # artefact, breaking the documented audit trail. Fail the
+                # round cleanly instead of silently advancing.
+                if result.stop_reason != "end_turn" or not fixes_path.exists():
+                    self._note(
+                        f"round {round_index}: fix phase did not complete "
+                        f"cleanly (stop_reason={result.stop_reason!r}, "
+                        f"artefact_exists={fixes_path.exists()}); "
+                        f"treating round as failed"
+                    )
+                    # review-0014: when the coder ends with `end_turn` but
+                    # never produced the fixes artefact, `_run_phase` has
+                    # already persisted status="done". Downgrade it so the
+                    # persisted state cannot show a `done` fix phase with
+                    # a missing artefact.
+                    fix_phase.status = "failed"
+                    self.state.status = "failed"
+                    self._save_state()
+                    return 2
+            else:
+                # Resume path: the fix phase already ran in a prior process.
+                # Validate the persisted artefact still exists so the next
+                # reviewer prompt does not reference a vanished file.
+                persisted = fix_phase.artifact_path
+                if not persisted or not Path(persisted).exists():
+                    self._note(
+                        f"round {round_index}: persisted done fix phase is "
+                        f"missing its artefact ({persisted!r}); treating "
+                        f"round as failed"
+                    )
+                    # review-0014: a persisted `done` fix phase whose
+                    # artefact has vanished is internally inconsistent —
+                    # mark it failed so a re-resume sees a coherent state.
+                    fix_phase.status = "failed"
+                    self.state.status = "failed"
+                    self._save_state()
+                    return 2
 
             self._save_state()
 
@@ -330,7 +494,12 @@ class Orchestrator:
         phase_record.cost = result.metrics.cost
         phase_record.tool_calls = result.metrics.tool_calls
         phase_record.restarts = [RestartRecord(**r) for r in result.restarts]
-        phase_record.status = "done" if result.stop_reason in ("end_turn",) else "failed"
+        if result.stop_reason == "aborted":
+            phase_record.status = "aborted"
+        elif result.stop_reason == "end_turn":
+            phase_record.status = "done"
+        else:
+            phase_record.status = "failed"
         self._save_state()
 
         self.console.print(
@@ -440,9 +609,22 @@ class Orchestrator:
                 repo=self.config.repo,
                 review_path=review_path,
             )
-        # Follow-up: resolve previous artefacts.
+        # Follow-up: resolve previous artefacts. If the previous round ran a
+        # readiness gate (because the initial review was clean but the gate
+        # found new issues), THAT is the review the coder actually fixed —
+        # so it's the one to reference here, not the now-stale original.
         prev = self.state.rounds[round_index - 2]
-        prev_review = next((p.artifact_path for p in prev.phases if p.name == "review"), "")
+        gate = next(
+            (
+                p
+                for p in prev.phases
+                if p.name == "readiness_gate" and p.status == "done" and p.artifact_path
+            ),
+            None,
+        )
+        review = next((p for p in prev.phases if p.name == "review"), None)
+        latest_reviewer = gate or review
+        prev_review = latest_reviewer.artifact_path if latest_reviewer else ""
         prev_fixes = next((p.artifact_path for p in prev.phases if p.name == "fix"), "")
         return REVIEW_PROMPT_FOLLOWUP.format(
             round_index=round_index,
@@ -465,8 +647,12 @@ class Orchestrator:
     def _install_signals(self) -> None:
         loop = asyncio.get_event_loop()
 
-        def _handler(sig):  # noqa: ANN001
+        def _handler(sig: str) -> None:
             self.console.print(f"[yellow]received signal {sig}; shutting down...[/yellow]")
+            # Write the abort marker so the PhaseRunner watchdog terminates
+            # the current Copilot subprocess promptly, and any waiting hook
+            # resolver returns a __CANCELLED__ sentinel.
+            write_abort_marker(self.config.aidor_dir, f"signal:{sig}")
             self._stop.set()
 
         if sys.platform != "win32":
@@ -474,6 +660,27 @@ class Orchestrator:
                 try:
                     loop.add_signal_handler(sig, _handler, sig.name)
                 except (NotImplementedError, RuntimeError):  # pragma: no cover
+                    pass
+        else:
+            # Windows: asyncio's ProactorEventLoop does not support
+            # `add_signal_handler`, but `signal.signal` in the main thread
+            # still catches SIGINT (Ctrl-C) and SIGBREAK (Ctrl-Break). We
+            # use it purely to write the abort marker — the subsequent
+            # KeyboardInterrupt propagates out of `asyncio.run` and the CLI
+            # entry point handles the actual teardown.
+            def _win_signal_handler(sig: int, _frame: FrameType | None) -> None:
+                write_abort_marker(self.config.aidor_dir, f"signal:{sig}")
+                # Re-raise as KeyboardInterrupt so the default control flow
+                # (asyncio.run -> CLI KeyboardInterrupt catch) still runs.
+                raise KeyboardInterrupt
+
+            for sig_name in ("SIGINT", "SIGBREAK"):
+                sig = getattr(signal, sig_name, None)
+                if sig is None:
+                    continue
+                try:
+                    signal.signal(sig, _win_signal_handler)
+                except (ValueError, OSError):  # pragma: no cover
                     pass
 
 

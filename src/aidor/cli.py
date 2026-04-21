@@ -33,6 +33,15 @@ app = typer.Typer(
 console = Console()
 
 
+def _load_state_or_exit(state_path: Path) -> State:
+    """Load state.json with operator-friendly errors instead of tracebacks."""
+    try:
+        return State.load(state_path)
+    except (ValueError, OSError) as exc:
+        console.print(f"[red]could not load {state_path}: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"aidor {__version__}")
@@ -108,6 +117,13 @@ def run(
     try:
         code = asyncio.run(orchestrator.run())
     except KeyboardInterrupt:
+        # Ensure the abort contract holds even when the interrupt arrives
+        # before/after `Orchestrator._install_signals` owns the handler —
+        # e.g. on Windows where Ctrl-C propagates as KeyboardInterrupt out
+        # of `asyncio.run`. Writing the marker is idempotent.
+        from aidor.orchestrator import write_abort_marker
+
+        write_abort_marker(config.aidor_dir, "keyboard_interrupt")
         console.print("[yellow]interrupted[/yellow]")
         code = 130
     raise typer.Exit(code=code)
@@ -125,7 +141,7 @@ def status(
     if not state_path.exists():
         console.print("[red]no .aidor/state.json found[/red]")
         raise typer.Exit(code=1)
-    state = State.load(state_path)
+    state = _load_state_or_exit(state_path)
     console.print(f"status: [bold]{state.status}[/bold]")
     console.print(f"rounds: {len(state.rounds)}")
     console.print(f"started: {state.started_at or '—'}  ended: {state.ended_at or '—'}")
@@ -147,7 +163,7 @@ def summary(
     if not state_path.exists():
         console.print("[red]no .aidor/state.json found[/red]")
         raise typer.Exit(code=1)
-    state = State.load(state_path)
+    state = _load_state_or_exit(state_path)
     print_summary(state, console)
     if write:
         out = repo / ".aidor" / "summary.md"
@@ -227,6 +243,12 @@ def doctor(
             shutil.which("systemd-inhibit") is not None,
             required=False,
         )
+    if sys.platform == "darwin":
+        check(
+            "caffeinate (keep-awake)",
+            shutil.which("caffeinate") is not None,
+            required=False,
+        )
     if sys.platform == "win32":
         check("Windows wake-lock via ctypes", True)
 
@@ -240,15 +262,37 @@ def doctor(
 def abort(
     repo: Path = typer.Option(Path.cwd(), "--repo", resolve_path=True),
 ) -> None:
-    """Mark the current run as aborted (sets status; does not kill copilot)."""
-    state_path = repo / ".aidor" / "state.json"
-    if not state_path.exists():
-        console.print("[red]no state.json[/red]")
-        raise typer.Exit(code=1)
-    state = State.load(state_path)
-    state.status = "aborted"
-    state.save(state_path)
-    console.print("[yellow]marked aborted[/yellow]")
+    """Mark the current run as aborted.
+
+    Writes `.aidor/ABORT` (the global abort marker watched by the phase
+    watchdog and the hook resolver) and flips `state.json` to ``aborted``.
+    The current Copilot subprocess is not signalled directly — the phase
+    watchdog detects the marker within ~1 s and terminates it cleanly.
+    """
+    aidor_dir = repo / ".aidor"
+    aidor_dir.mkdir(parents=True, exist_ok=True)
+    abort_marker = aidor_dir / "ABORT"
+    abort_marker.write_text(
+        f"aborted_via=cli at={_utcnow()}\n",
+        encoding="utf-8",
+    )
+
+    state_path = aidor_dir / "state.json"
+    if state_path.exists():
+        state = _load_state_or_exit(state_path)
+        state.status = "aborted"
+        state.save(state_path)
+        console.print("[yellow]marked aborted (wrote .aidor/ABORT + state.json)[/yellow]")
+    else:
+        console.print(
+            "[yellow]wrote .aidor/ABORT (no state.json to update)[/yellow]"
+        )
+
+
+def _utcnow() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 if __name__ == "__main__":

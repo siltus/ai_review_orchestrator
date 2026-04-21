@@ -33,7 +33,8 @@ aidor doctor
 ```
 
 `aidor doctor` checks Python version, `copilot` on PATH, and the wake-lock
-backend for your platform.
+backend for your platform (`SetThreadExecutionState` on Windows,
+`systemd-inhibit` on Linux, `caffeinate` on macOS).
 
 ## First run (dry-run)
 
@@ -105,7 +106,7 @@ All artefacts live under `.aidor/`:
 
 ```
 .aidor/reviews/review-0001-<utc>.md   ← reviewer's findings + AIDOR footer
-.aidor/fixes/fix-0001-<utc>.md        ← coder's per-round summary
+.aidor/fixes/fixes-0001-<utc>.md      ← coder's per-round summary
 .aidor/transcripts/<role>-<NNNN>.md   ← Copilot --share log
 .aidor/logs/orchestrator.log          ← hook breadcrumbs
 .aidor/logs/qa.jsonl                  ← every ask_user resolution
@@ -143,13 +144,13 @@ To enable locally:
 python -m pre_commit install
 ```
 
-To run them once:
+To run them once (same commands CI runs, including the coverage gate):
 
 ```pwsh
 python -m ruff check src tests
 python -m ruff format --check src tests
 python -m pip_audit --skip-editable
-python -m pytest -q
+python -m pytest --cov=aidor --cov-report=term-missing --cov-fail-under=90
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.

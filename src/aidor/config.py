@@ -11,7 +11,6 @@ DEFAULT_ROUND_TIMEOUT_S = 10_800  # 3 hours
 DEFAULT_MAX_ROUNDS = 10
 DEFAULT_MAX_RESTARTS_PER_ROUND = 3
 DEFAULT_MAX_ARTIFACT_MB = 256
-DEFAULT_TELEGRAM_REPING_S = 1800  # 30 minutes
 DEFAULT_TOOL_TIMEOUT_S = 2700  # 45 minutes (advisory; not enforced by default)
 
 # Restart back-off schedule for `copilot --continue` retries.
@@ -36,9 +35,6 @@ class RunConfig:
     keep_awake: bool = True
     kill_long_tools: bool = False
     tool_timeout_s: int = DEFAULT_TOOL_TIMEOUT_S
-
-    telegram_enabled: bool = False
-    telegram_reping_s: int = DEFAULT_TELEGRAM_REPING_S
 
     dry_run: bool = False
     resume: bool = False

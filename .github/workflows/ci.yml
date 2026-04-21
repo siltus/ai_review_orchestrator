@@ -24,4 +24,7 @@ jobs:
       - name: pip-audit (supply-chain)
         run: python -m pip_audit --skip-editable
       - name: pytest
-        run: python -m pytest --cov=aidor --cov-report=term-missing
+        # --cov-fail-under=90 enforces the AGENTS.md non-negotiable coverage
+        # baseline at the CI level; [tool.coverage.report] fail_under = 90
+        # in pyproject.toml enforces the same floor for `coverage report`.
+        run: python -m pytest --cov=aidor --cov-report=term-missing --cov-fail-under=90

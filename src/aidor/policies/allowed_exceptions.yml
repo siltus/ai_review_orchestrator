@@ -8,11 +8,48 @@
 #   reason:     short reason returned to the agent
 #
 # Edit this file freely. aidor will never overwrite it after bootstrap.
+#
+# The entries below are this repository's own approved Ruff exceptions; they
+# must stay in sync with `pyproject.toml` (`[tool.ruff.lint] ignore = [...]`
+# and `[tool.ruff.lint.per-file-ignores]`). Bootstrap seeds a fresh
+# `.aidor/allowed_exceptions.yml` from this versioned template, so removing
+# entries here will silently change hook-resolver behavior on a fresh clone.
 
-exceptions: []
-# Example:
-# exceptions:
-#   - rule: E501
-#     linter: ruff
-#     path_glob: "src/**/*_urls.py"
-#     reason: "Long URL literals in URL constants are acceptable."
+exceptions:
+  - rule: E501
+    linter: ruff
+    path_glob: "**/*"
+    reason: >-
+      Long URL literals, long error strings, and long test fixtures are more
+      readable on a single line than wrapped. The formatter (`ruff format`)
+      already enforces a 100-char soft limit for normal code.
+  - rule: B008
+    linter: ruff
+    path_glob: "src/aidor/cli.py"
+    reason: >-
+      Typer's public API requires `typer.Option(...)` / `typer.Argument(...)`
+      as default values for CLI parameters. Removing them would break the CLI.
+  - rule: SIM102
+    linter: ruff
+    path_glob: "**/*"
+    reason: >-
+      Nested `if` statements are sometimes clearer than a combined boolean
+      expression (e.g. when each level has a distinct responsibility).
+  - rule: SIM105
+    linter: ruff
+    path_glob: "**/*"
+    reason: >-
+      `contextlib.suppress` hides the exception type from the reader; an
+      explicit `try/except: pass` is clearer for one-off defensive code.
+  - rule: SIM117
+    linter: ruff
+    path_glob: "**/*"
+    reason: >-
+      Combined `with` statements sometimes harm readability when the inner
+      context manager depends on side-effects of the outer one.
+  - rule: B011
+    linter: ruff
+    path_glob: "tests/**/*"
+    reason: >-
+      Bare `assert` is the idiomatic way to express test assertions in
+      pytest; the `-O` Python flag is never used in the CI test run.

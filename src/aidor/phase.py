@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
 from aidor.config import RESTART_BACKOFF_S, RunConfig
@@ -212,13 +213,25 @@ class PhaseRunner:
             while a hook of ours is currently waiting (e.g. on a human).
             We track cumulative pause duration in `paused_total` and subtract
             it from elapsed wall-clock when comparing to the round timeout.
+
+            The watchdog also polls for `.aidor/ABORT` (the global abort
+            marker written by `aidor abort` or a signal handler). If present,
+            it terminates the subprocess promptly with stop_reason="aborted".
             """
             nonlocal last_activity
             warned = False
             paused_total = 0.0
             pause_started: float | None = None
+            abort_marker = self.config.aidor_dir / "ABORT"
             while proc.returncode is None:
                 await asyncio.sleep(1.0)
+                if abort_marker.exists():
+                    log.warning(
+                        "phase %s-%d aborted via .aidor/ABORT marker",
+                        self.role,
+                        self.phase_index,
+                    )
+                    return "aborted"
                 now = time.monotonic()
                 busy = self._is_hook_busy()
                 if busy:
@@ -396,11 +409,21 @@ class _suppress:
     def __enter__(self) -> _suppress:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001 - stdlib signature
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         return exc_type is not None and issubclass(exc_type, self.excs)
 
     async def __aenter__(self) -> _suppress:  # pragma: no cover
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> bool:  # pragma: no cover
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:  # pragma: no cover
         return exc_type is not None and issubclass(exc_type, self.excs)

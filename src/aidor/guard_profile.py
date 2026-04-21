@@ -29,11 +29,31 @@ _BASE_ALLOW = (
     "shell(git checkout)",
     "shell(git rev-parse)",
     "shell(git ls-files)",
+    # Repo-scoped quality gates the coder is contractually required to
+    # run (see AGENTS.md): linting, formatting, supply-chain audit, and
+    # the test suite. These are the exact `python -m ...` invocations
+    # wired into `.pre-commit-config.yaml` and `.github/workflows/ci.yml`,
+    # so the launched coder can actually verify its own fixes. The scope
+    # is intentionally narrow — only the validation commands themselves,
+    # not arbitrary shell access.
+    "shell(python -m ruff)",
+    "shell(python -m pip_audit)",
+    "shell(python -m pytest)",
+    "shell(python -m pre_commit)",
+    "shell(pytest)",
+    "shell(ruff)",
+    "shell(pip-audit)",
+    "shell(pre-commit)",
     # Build / test commands discovered from manifests are appended below.
 )
 
 
 # Deny rules always take precedence, even if an allow rule matches.
+# NOTE: Python `pip install` denies are intentionally NOT in this base
+# tuple. They are emitted conditionally by `build_flags` so that the
+# lockfile-gated `pip install -e` allow entry can actually take effect
+# when --allow-local-install is on for a Python repo. See
+# `_PYTHON_GLOBAL_INSTALL_DENY_BROAD` / `_NARROW` below.
 _BASE_DENY = (
     "shell(git push)",
     "shell(git remote)",
@@ -43,9 +63,8 @@ _BASE_DENY = (
     "shell(doas)",
     "shell(rm -rf /)",
     "shell(rmdir /s)",
-    # Global installs.
-    "shell(pip install)",
-    "shell(pip3 install)",
+    # Global installs (non-Python — Python is handled separately so the
+    # editable-install allowlist isn't shadowed).
     "shell(pipx install)",
     "shell(npm install -g)",
     "shell(npm i -g)",
@@ -71,55 +90,115 @@ _BASE_DENY = (
 )
 
 
-# When --allow-local-install is on we add these back to the allow list.
-# Note: `pip install --user` is intentionally absent — `--user` writes to
-# `%APPDATA%\Python` (Windows) or `~/.local/` (Unix), which is OUTSIDE the
-# repo and therefore violates the "no global installs" guard rule. Use
-# `pip install -e .` inside a project venv instead.
-_LOCAL_INSTALL_ALLOW = (
-    "shell(poetry install)",
-    "shell(pip install -e)",
-    "shell(npm ci)",
-    "shell(npm install)",
-    "shell(pnpm install)",
-    "shell(pnpm i)",
-    "shell(yarn install)",
-    "shell(yarn)",
-    "shell(cargo build)",
-    "shell(cargo fetch)",
-    "shell(go mod download)",
-    "shell(uv sync)",
-    "shell(uv pip install)",
-    "shell(pixi install)",
+# Default Python pip install deny — a blanket prefix that catches any
+# `pip install <pkg>` invocation. Used when `--allow-local-install` is OFF
+# or when the repo lacks a Python lockfile marker.
+_PYTHON_GLOBAL_INSTALL_DENY_BROAD = (
+    "shell(pip install)",
+    "shell(pip3 install)",
 )
 
 
-# Files whose presence indicates the repo has a real lockfile (and therefore
-# project-local installs are meaningful + reproducible). Note: `pyproject.toml`
-# is NOT a lockfile — its presence does not guarantee a pinned dependency
-# graph, so it is intentionally excluded.
-_LOCAL_INSTALL_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+# Narrow Python pip install deny — used when `--allow-local-install` is
+# ON for a Python repo with a lockfile. We must NOT emit the broad prefix
+# above because deny rules take precedence over allow rules: a broad
+# `shell(pip install)` deny would shadow the lockfile-gated
+# `shell(pip install -e)` allow entry, contradicting the documented
+# behaviour of `--allow-local-install`. Instead we deny only the
+# explicitly out-of-repo install vectors (`--user`, `--target`,
+# `--prefix`, `--root`), which write outside the project tree.
+_PYTHON_GLOBAL_INSTALL_DENY_NARROW = (
+    "shell(pip install --user)",
+    "shell(pip install --target)",
+    "shell(pip install --prefix)",
+    "shell(pip install --root)",
+    "shell(pip3 install --user)",
+    "shell(pip3 install --target)",
+    "shell(pip3 install --prefix)",
+    "shell(pip3 install --root)",
+)
+
+
+# Ecosystem mapping: each entry pairs the lockfile markers that prove a
+# real, reproducible dependency graph for that ecosystem with the install
+# commands that should be unlocked when --allow-local-install is on AND a
+# matching marker is present.
+#
+# review-0015: split by ecosystem so that, e.g., a `package-lock.json` does
+# NOT unlock unrelated commands like `uv pip install` or `poetry install`.
+# `pyproject.toml` is intentionally NOT a marker (not a lockfile), and
+# `requirements.txt` is intentionally NOT a marker either — it is just a
+# free-form input file, not a pinned, hashed lockfile, and the docs frame
+# this feature around "real lockfiles".
+#
+# `pip install --user` is intentionally NOT in the Python allow set —
+# `--user` writes to `%APPDATA%\Python` (Windows) or `~/.local/` (Unix),
+# which is OUTSIDE the repo and therefore violates the "no global
+# installs" guard rule. Use `pip install -e .` inside a project venv.
+_LOCAL_INSTALL_ECOSYSTEMS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     # Python
-    ("poetry.lock", ()),
-    ("uv.lock", ()),
-    ("requirements.txt", ()),
-    ("Pipfile.lock", ()),
-    # JS
-    ("package-lock.json", ()),
-    ("pnpm-lock.yaml", ()),
-    ("yarn.lock", ()),
-    # Rust / Go / pixi
-    ("Cargo.lock", ()),
-    ("go.sum", ()),
-    ("pixi.lock", ()),
+    (
+        ("poetry.lock", "uv.lock", "Pipfile.lock"),
+        (
+            "shell(poetry install)",
+            "shell(pip install -e)",
+            "shell(uv sync)",
+            "shell(uv pip install)",
+        ),
+    ),
+    # JavaScript / TypeScript
+    (
+        ("package-lock.json", "pnpm-lock.yaml", "yarn.lock"),
+        (
+            "shell(npm ci)",
+            "shell(npm install)",
+            "shell(pnpm install)",
+            "shell(pnpm i)",
+            "shell(yarn install)",
+            "shell(yarn)",
+        ),
+    ),
+    # Rust
+    (("Cargo.lock",), ("shell(cargo build)", "shell(cargo fetch)")),
+    # Go
+    (("go.sum",), ("shell(go mod download)",)),
+    # Pixi
+    (("pixi.lock",), ("shell(pixi install)",)),
 )
+
+
+# Lockfile markers that specifically indicate a Python repo. When one of
+# these is present AND --allow-local-install is on, we switch from the
+# broad `pip install` deny to a narrower set so the editable-install allow
+# can take effect.
+_PYTHON_LOCAL_INSTALL_MARKERS: tuple[str, ...] = (
+    "poetry.lock",
+    "uv.lock",
+    "Pipfile.lock",
+)
+
+
+def _ecosystems_present(repo: Path) -> list[tuple[str, ...]]:
+    """Return the list of ecosystem allow-tuples whose markers are present
+    in `repo`. Each ecosystem is independent: the presence of a JS lockfile
+    does NOT enable Python install commands and vice versa."""
+    matched: list[tuple[str, ...]] = []
+    for markers, allow in _LOCAL_INSTALL_ECOSYSTEMS:
+        if any((repo / marker).exists() for marker in markers):
+            matched.append(allow)
+    return matched
 
 
 def detect_local_install_available(repo: Path) -> bool:
     """Return True if the repo contains a lockfile / manifest indicating a
     local install is meaningful (and therefore permissible if
     --allow-local-install is on)."""
-    return any((repo / marker).exists() for marker, _ in _LOCAL_INSTALL_MARKERS)
+    return bool(_ecosystems_present(repo))
+
+
+def _detect_python_local_install_available(repo: Path) -> bool:
+    """Return True if the repo contains a Python lockfile marker."""
+    return any((repo / marker).exists() for marker in _PYTHON_LOCAL_INSTALL_MARKERS)
 
 
 def _expand_shell_aliases(rules: tuple[str, ...]) -> list[str]:
@@ -155,11 +234,27 @@ def build_flags(
     for rule in _expand_shell_aliases(_BASE_ALLOW):
         flags.append(f"--allow-tool={rule}")
 
-    if allow_local_install and detect_local_install_available(repo):
-        for rule in _expand_shell_aliases(_LOCAL_INSTALL_ALLOW):
-            flags.append(f"--allow-tool={rule}")
+    if allow_local_install:
+        # review-0015: only unlock the install commands for ecosystems
+        # whose lockfiles are actually present. A bare `package-lock.json`
+        # must NOT enable `uv pip install` / `poetry install`, etc.
+        seen: set[str] = set()
+        for ecosystem_allow in _ecosystems_present(repo):
+            for rule in _expand_shell_aliases(ecosystem_allow):
+                if rule in seen:
+                    continue
+                seen.add(rule)
+                flags.append(f"--allow-tool={rule}")
 
-    for rule in _expand_shell_aliases(_BASE_DENY):
+    # Python pip-install denies are emitted conditionally so the
+    # `pip install -e` allow entry isn't shadowed by a broad `pip install`
+    # deny when --allow-local-install is on for a Python repo.
+    if allow_local_install and _detect_python_local_install_available(repo):
+        python_pip_deny = _PYTHON_GLOBAL_INSTALL_DENY_NARROW
+    else:
+        python_pip_deny = _PYTHON_GLOBAL_INSTALL_DENY_BROAD
+
+    for rule in _expand_shell_aliases(_BASE_DENY + python_pip_deny):
         flags.append(f"--deny-tool={rule}")
 
     return flags

@@ -45,5 +45,9 @@ Rules:
 - `PRODUCTION_READY=true` requires `STATUS=CLEAN` AND you genuinely believe the
   repo can ship to production today. Do not set it to `true` lightly — the
   orchestrator will exit the loop as soon as you do.
-- `ISSUES` must be valid JSON with integer counts. You may add severities
-  beyond the four above, but always include at least those four.
+- `ISSUES` must be valid JSON with integer counts, and MUST include all four
+  baseline severities (`critical`, `major`, `minor`, `nit`) explicitly — even
+  when their count is zero. You may add additional severities beyond those
+  four. The orchestrator rejects footers that omit any baseline severity, that
+  declare `STATUS=CLEAN` while `critical` or `major` is non-zero, or that
+  declare `PRODUCTION_READY=true` without satisfying both of those.

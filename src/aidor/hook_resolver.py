@@ -10,7 +10,8 @@ Contract (Copilot CLI hooks):
 Our resolver implements the four-step pipeline for `ask_user` questions:
   1. Policy lookup    (question_classes.yml + allowed_exceptions.yml)
   2. State-derived    (read .aidor/state.json + latest review file)
-  3. Human            (file-based IPC with the orchestrator; unbounded wait)
+  3. Human            (file-based IPC with the orchestrator; long wait,
+                       capped by the hook timeout in bootstrap.py — currently 24 h)
   4. Cancellation     (orchestrator writes *.cancel → deny with reason)
 
 Every Q&A is audited to .aidor/logs/qa.jsonl.
@@ -216,8 +217,19 @@ def _match_class(question: str, classes_cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _lookup_lint_exception(repo: Path, question: str) -> str | None:
-    """Return an approval answer if the question matches a pre-approved
-    exception in .aidor/allowed_exceptions.yml, else None."""
+    """Return an approval answer only when the question matches ALL of the
+    documented allowed_exceptions.yml contract fields for a given entry:
+
+      - rule     (required): the rule id must appear as a standalone token
+      - linter   (optional): if the entry declares a linter, that linter's
+                 name must appear in the question
+      - path_glob(optional): if the entry declares a path_glob, at least one
+                 file-path-like token in the question must match that glob
+
+    If no entry satisfies every populated field, we deny (return None) and
+    escalate to a human. This prevents a mere mention of a rule id from
+    auto-approving the exception outside its documented scope.
+    """
     path = repo / ".aidor" / "allowed_exceptions.yml"
     if not path.exists():
         return None
@@ -226,13 +238,75 @@ def _lookup_lint_exception(repo: Path, question: str) -> str | None:
     except Exception:  # pragma: no cover - defensive
         return None
     exceptions = cfg.get("exceptions") or []
-    q_lower = question.lower()
+    q = question or ""
+    q_lower = q.lower()
+    target_paths = _extract_path_tokens(q)
     for ex in exceptions:
-        rule = str(ex.get("rule", "")).lower()
-        if rule and rule in q_lower:
-            reason = ex.get("reason", "pre-approved")
-            return f"Yes, approved. Reason: {reason}"
+        rule = str(ex.get("rule", "") or "")
+        if not rule:
+            continue
+        # Rule id must appear as a whole token (case-sensitive — rule ids are
+        # canonicalised by their linter, e.g. `B011`, `no-unused-vars`).
+        if not re.search(rf"(?<![A-Za-z0-9_]){re.escape(rule)}(?![A-Za-z0-9_])", q):
+            continue
+        linter = str(ex.get("linter", "") or "").strip().lower()
+        if linter and linter not in q_lower:
+            continue
+        path_glob = str(ex.get("path_glob", "") or "").strip()
+        if path_glob:
+            if not target_paths:
+                continue
+            if not any(_glob_match(p, path_glob) for p in target_paths):
+                continue
+        reason = ex.get("reason", "pre-approved")
+        return f"Yes, approved. Reason: {reason}"
     return None
+
+
+def _extract_path_tokens(question: str) -> list[str]:
+    """Pull out file-path-like tokens from the question.
+
+    Catches both slash-bearing paths (`src/aidor/cli.py`) and bare filenames
+    with a recognisable extension (`cli.py`). Backslashes are normalised.
+    """
+    found: set[str] = set()
+    # Tokens with at least one slash separator.
+    for m in re.finditer(r"[A-Za-z0-9_.\\-]+(?:[\\/][A-Za-z0-9_.\\-]+)+", question):
+        found.add(m.group(0).replace("\\", "/").strip("`'\""))
+    # Bare `name.ext` tokens (short extensions only to avoid grabbing URLs).
+    for m in re.finditer(r"\b[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9]{0,5}\b", question):
+        found.add(m.group(0))
+    return list(found)
+
+
+def _glob_match(path: str, glob: str) -> bool:
+    """Minimal glob matcher with `*`, `?`, and `**` support.
+
+    `**/` matches zero or more path segments; `**` at end matches anything;
+    `*` matches within a single segment; `?` matches a single non-slash char.
+    Backslashes in `path`/`glob` are normalised to forward slashes.
+    """
+    p = path.replace("\\", "/").lstrip("./")
+    g = glob.replace("\\", "/")
+    parts: list[str] = []
+    i = 0
+    while i < len(g):
+        if g[i : i + 3] == "**/":
+            parts.append("(?:.*/)?")
+            i += 3
+        elif g[i : i + 2] == "**":
+            parts.append(".*")
+            i += 2
+        elif g[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif g[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(g[i]))
+            i += 1
+    return bool(re.match("^" + "".join(parts) + "$", p))
 
 
 def _lookup_state_answer(repo: Path, question: str) -> str | None:

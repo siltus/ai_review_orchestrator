@@ -94,10 +94,16 @@ def print_summary(state: State, console: Console | None = None) -> None:
 
 
 def _phase(phases: list, role: str):
+    # Return the *latest* phase for this role. A round can contain more than
+    # one reviewer phase (e.g. the initial `review` plus a `readiness_gate`),
+    # and we must not silently hide the gate by reporting only the first
+    # reviewer phase — that would mix the initial review's status/duration
+    # with the gate's footer counts in the same row.
+    match = None
     for p in phases:
         if p.role == role:
-            return p
-    return None
+            match = p
+    return match
 
 
 def _fmt_phase(p) -> str:

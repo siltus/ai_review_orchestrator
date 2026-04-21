@@ -100,18 +100,20 @@ Everything is written into `<repo>/.aidor/` (gitignored by default):
 ├── config.snapshot.toml    # effective config for this run
 ├── allowed_exceptions.yml  # editable exceptions list
 ├── reviews/                # review-NNNN-<utc>.md   (reviewer outputs)
-├── fixes/                  # fix-NNNN-<utc>.md      (coder summaries)
+├── fixes/                  # fixes-NNNN-<utc>.md    (coder summaries)
 ├── transcripts/            # reviewer-NNNN.md, coder-NNNN.md (--share)
 ├── logs/
 │   ├── orchestrator.log    # hook breadcrumbs + orchestrator events
 │   ├── qa.jsonl            # one line per ask_user resolution
 │   ├── otel-<role>-<NNNN>.jsonl
 │   └── <role>-<NNNN>.stderr
-└── pending/                # IPC scratch dir for human questions:
-                            #   <uuid>.json     — request from coder
-                            #   <uuid>.answer   — orchestrator's answer
-                            #   <uuid>.cancel   — human aborted this Q
-                            #   ABORT           — global abort marker
+├── pending/                # IPC scratch dir for human questions:
+│                           #   <uuid>.json     — request from coder
+│                           #   <uuid>.answer   — orchestrator's answer
+│                           #   <uuid>.cancel   — human aborted this Q
+└── ABORT                   # global abort marker (written by `aidor abort`
+                            # or by SIGINT/SIGTERM; polled by the phase
+                            # watchdog and the hook resolver)
 ```
 
 ## State machine
@@ -212,7 +214,9 @@ The repo runs three gates in pre-commit and CI:
 1. **`ruff check` + `ruff format --check`** — lint + style.
 2. **`pip-audit --skip-editable`** — supply-chain vulnerability scan
    (AGENTS.md baseline #1).
-3. **`pytest`** — full unit suite (with `--cov` in CI).
+3. **`pytest`** — full unit suite. Both pre-commit and CI invoke pytest with
+   `--cov=aidor --cov-fail-under=90` so the AGENTS.md ≥ 90 % line-coverage
+   floor is enforced before a commit lands and again in CI.
 
 See [.pre-commit-config.yaml](.pre-commit-config.yaml) and
 [.github/workflows/ci.yml](.github/workflows/ci.yml).

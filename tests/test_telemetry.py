@@ -53,23 +53,39 @@ def test_invoke_agent_span_supplies_canonical_token_counts(tmp_path):
 
 
 def test_chat_only_falls_back_when_no_invoke_agent(tmp_path):
+    """When there is no invoke_agent span, per-phase totals are the sum
+    across all chat spans (each chat span describes one turn). Regression
+    for review-0009: previously only the first chat span's tokens were
+    kept and cost was dropped entirely."""
     p = tmp_path / "otel.jsonl"
-    p.write_text(
-        json.dumps(
-            {
-                "name": "chat",
-                "attributes": {
-                    "gen_ai.usage.input_tokens": 42,
-                    "gen_ai.usage.output_tokens": 21,
-                },
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    records = [
+        {
+            "name": "chat claude-opus-4.7",
+            "attributes": {
+                "gen_ai.usage.input_tokens": 100,
+                "gen_ai.usage.output_tokens": 50,
+                "github.copilot.cost": 1.5,
+            },
+        },
+        {
+            "name": "chat claude-opus-4.7",
+            "attributes": {
+                "gen_ai.usage.input_tokens": 200,
+                "gen_ai.usage.output_tokens": 80,
+                "github.copilot.cost": 2.5,
+            },
+        },
+        {"name": "execute_tool view", "attributes": {}},
+        {"name": "execute_tool view", "attributes": {}},
+        {"name": "execute_tool edit", "attributes": {}},
+    ]
+    p.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
     m = parse_otel_file(p)
-    assert m.tokens_in == 42
-    assert m.tokens_out == 21
+    assert m.tokens_in == 300
+    assert m.tokens_out == 130
+    assert abs(m.cost - 4.0) < 1e-9
+    assert m.tool_calls == 3
+    assert m.turns == 2  # two chat spans
 
 
 def test_iadd_accumulates_metrics():

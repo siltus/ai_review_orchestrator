@@ -25,7 +25,9 @@ repos:
         stages: [pre-commit]
       - id: pytest
         name: pytest (fast test suite)
-        entry: python -m pytest -q
+        # Enforce the ≥90 % line-coverage floor from AGENTS.md on pre-commit,
+        # matching the CI job so drift is caught before PRs open.
+        entry: python -m pytest -q --cov=aidor --cov-fail-under=90
         language: system
         pass_filenames: false
         stages: [pre-commit]

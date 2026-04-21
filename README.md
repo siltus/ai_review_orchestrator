@@ -11,10 +11,11 @@ Copilot CLI in an automated review↔fix loop. It is a thin supervisor around
 - watches for idle / round-timeout, restarts via `--continue` with
   exponential back-off, and pauses timers when a hook is waiting on a
   human;
-- escalates legitimate coder questions (`ask_user`) to a human with
-  **unbounded** wait — answers may come at 3 AM;
+- escalates legitimate coder questions (`ask_user`) to a human with a
+  long (24 h) wait — answers may come at 3 AM, but the hook will time
+  out if no one responds within a day;
 - keeps the machine awake across long sessions (Windows
-  `SetThreadExecutionState`, Linux `systemd-inhibit`).
+  `SetThreadExecutionState`, Linux `systemd-inhibit`, macOS `caffeinate`).
 
 ## Install
 
@@ -40,7 +41,7 @@ See [plan.md](plan.md) for design details.
 | `aidor summary`  | Render summary table + `.aidor/summary.md`     |
 | `aidor doctor`   | Environment checks                             |
 | `aidor clean`    | Remove `.aidor/` run artefacts                 |
-| `aidor abort`    | Mark current run aborted (does not kill copilot) |
+| `aidor abort`    | Write `.aidor/ABORT`; the phase watchdog terminates the running Copilot subprocess promptly |
 
 ## Layout
 

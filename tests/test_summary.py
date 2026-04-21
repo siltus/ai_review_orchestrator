@@ -11,6 +11,7 @@ from aidor.summary import (
     _fmt_dur,
     _fmt_int,
     _fmt_prod,
+    _phase,
     _sum_cost,
     _sum_tokens,
     print_summary,
@@ -106,3 +107,64 @@ def test_sum_helpers_aggregate_across_phases():
     assert _sum_tokens(rnd, "in") == 1234 + 2222
     assert _sum_tokens(rnd, "out") == 567 + 888
     assert abs(_sum_cost(rnd) - (0.0123 + 0.0456)) < 1e-9
+
+
+def _state_with_readiness_gate_round() -> State:
+    """A round where the initial review was clean but the readiness gate
+    found issues — i.e. the round contains *two* reviewer phases."""
+    s = State(status="unconverged")
+    rnd = RoundRecord(index=1)
+    rnd.phases.append(
+        PhaseRecord(
+            name="review",
+            role="reviewer",
+            status="done",
+            duration_s=60.0,
+            tokens_in=100,
+            tokens_out=50,
+            cost=0.001,
+        )
+    )
+    rnd.phases.append(
+        PhaseRecord(
+            name="readiness_gate",
+            role="reviewer",
+            status="done",
+            duration_s=200.0,
+            tokens_in=300,
+            tokens_out=150,
+            cost=0.005,
+        )
+    )
+    rnd.footer = {
+        "issues": {"critical": 0, "major": 1, "minor": 0, "nit": 0},
+        "production_ready": False,
+    }
+    s.rounds.append(rnd)
+    return s
+
+
+def test_phase_returns_latest_reviewer_for_readiness_gate_round():
+    """Regression: a round with both `review` and `readiness_gate` phases must
+    report the *latest* reviewer phase (the gate) in the summary, not the
+    initial review — otherwise the row mixes the initial review's
+    status/duration with the gate's footer counts."""
+    state = _state_with_readiness_gate_round()
+    rnd = state.rounds[0]
+    reviewer = _phase(rnd.phases, "reviewer")
+    assert reviewer is not None
+    assert reviewer.name == "readiness_gate"
+    assert reviewer.duration_s == 200.0
+
+
+def test_summary_md_reflects_readiness_gate_phase(tmp_path):
+    state = _state_with_readiness_gate_round()
+    out = tmp_path / "summary.md"
+    write_summary_md(state, out)
+    body = out.read_text(encoding="utf-8")
+    # The reviewer column should reflect the gate's duration (3m20s), not
+    # the initial review's (1m00s).
+    assert "3m20s" in body
+    assert "1m00s" not in body
+    # Tokens still aggregate across both reviewer phases (operator total).
+    assert "400" in body  # 100 + 300 tokens in
