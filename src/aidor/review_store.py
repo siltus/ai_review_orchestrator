@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from aidor.config import DEFAULT_MAX_ARTIFACT_MB, read_artifact_text
+
 FOOTER_STATUS_RE = re.compile(r"<!--\s*AIDOR:STATUS=(CLEAN|ISSUES_FOUND)\s*-->", re.IGNORECASE)
 FOOTER_ISSUES_RE = re.compile(r"<!--\s*AIDOR:ISSUES=(\{[^}]*\})\s*-->", re.IGNORECASE)
 FOOTER_READY_RE = re.compile(r"<!--\s*AIDOR:PRODUCTION_READY=(true|false)\s*-->", re.IGNORECASE)
@@ -181,9 +183,15 @@ class ReviewStore:
     REVIEW_RE = re.compile(r"^review-(\d{4,})-.*\.md$")
     FIX_RE = re.compile(r"^fixes-(\d{4,})-.*\.md$")
 
-    def __init__(self, reviews_dir: Path, fixes_dir: Path) -> None:
+    def __init__(
+        self,
+        reviews_dir: Path,
+        fixes_dir: Path,
+        max_artifact_mb: int = DEFAULT_MAX_ARTIFACT_MB,
+    ) -> None:
         self.reviews_dir = reviews_dir
         self.fixes_dir = fixes_dir
+        self.max_artifact_mb = max_artifact_mb
 
     def ensure_dirs(self) -> None:
         self.reviews_dir.mkdir(parents=True, exist_ok=True)
@@ -207,7 +215,7 @@ class ReviewStore:
         return self._next_path(self.reviews_dir, "review", self.REVIEW_RE, timestamp)
 
     def read_review_footer(self, path: Path) -> ReviewFooter:
-        return parse_footer(path.read_text(encoding="utf-8"))
+        return parse_footer(read_artifact_text(path, self.max_artifact_mb))
 
     # ---- Fix files ---------------------------------------------------------
 

@@ -22,7 +22,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from aidor.bootstrap import bootstrap
-from aidor.config import RunConfig
+from aidor.config import RunConfig, read_artifact_text
 from aidor.phase import PhaseEvent, PhaseResult, PhaseRunner
 from aidor.review_store import FooterParseError, ReviewFooter, ReviewStore, parse_footer
 from aidor.state import (
@@ -134,7 +134,9 @@ class Orchestrator:
         self.config = config
         self.console = console or Console()
         self.state: State = State()
-        self.review_store = ReviewStore(config.reviews_dir, config.fixes_dir)
+        self.review_store = ReviewStore(
+            config.reviews_dir, config.fixes_dir, max_artifact_mb=config.max_artifact_mb
+        )
         self._human_watcher_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._pending_seen: set[str] = set()
@@ -276,7 +278,9 @@ class Orchestrator:
             else:
                 review_path = Path(review_path_str)
                 try:
-                    footer = parse_footer(review_path.read_text(encoding="utf-8"))
+                    footer = parse_footer(
+                        read_artifact_text(review_path, self.config.max_artifact_mb)
+                    )
                 except (FooterParseError, OSError) as exc:
                     self._note(f"round {round_index}: footer parse failed: {exc}")
                     footer = None
@@ -320,7 +324,9 @@ class Orchestrator:
                     gate_footer_error = "readiness-gate artefact missing"
                 else:
                     try:
-                        gate_footer = parse_footer(gate_path.read_text(encoding="utf-8"))
+                        gate_footer = parse_footer(
+                            read_artifact_text(gate_path, self.config.max_artifact_mb)
+                        )
                     except FooterParseError as exc:
                         gate_footer_error = f"readiness-gate footer invalid: {exc}"
                     except OSError as exc:

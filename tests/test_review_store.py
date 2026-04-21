@@ -249,3 +249,45 @@ def test_footer_rejects_production_ready_when_critical_nonzero():
     # are correct rejections — we just require it to raise.
     with pytest.raises(FooterParseError):
         parse_footer(body)
+
+
+# ---- Artefact size enforcement (review-0001) ----------------------------
+
+
+def test_read_artifact_text_raises_when_over_limit(tmp_path):
+    """Regression (review-0001): `max_artifact_mb` must actually be
+    enforced. A runaway agent writing a huge review file must not be
+    silently slurped into memory by the orchestrator."""
+    from aidor.config import ArtifactTooLargeError, read_artifact_text
+
+    target = tmp_path / "huge.md"
+    target.write_bytes(b"x" * (2 * 1024 * 1024))
+    with pytest.raises(ArtifactTooLargeError) as excinfo:
+        read_artifact_text(target, max_mb=1)
+    assert excinfo.value.limit_mb == 1
+    assert excinfo.value.size_bytes >= 2 * 1024 * 1024
+    assert isinstance(excinfo.value, OSError)
+
+
+def test_read_artifact_text_allows_small_file(tmp_path):
+    from aidor.config import read_artifact_text
+
+    target = tmp_path / "ok.md"
+    target.write_text("hello", encoding="utf-8")
+    assert read_artifact_text(target, max_mb=1) == "hello"
+
+
+def test_review_store_read_footer_enforces_size_limit(tmp_path):
+    """Regression (review-0001): `ReviewStore.read_review_footer` must honour
+    the configured `max_artifact_mb` limit."""
+    from aidor.config import ArtifactTooLargeError
+
+    reviews = tmp_path / "reviews"
+    reviews.mkdir()
+    fixes = tmp_path / "fixes"
+    fixes.mkdir()
+    store = ReviewStore(reviews, fixes, max_artifact_mb=1)
+    target = reviews / "review-0001-20260101-000000.md"
+    target.write_bytes(b"y" * (2 * 1024 * 1024))
+    with pytest.raises(ArtifactTooLargeError):
+        store.read_review_footer(target)

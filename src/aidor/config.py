@@ -11,10 +11,40 @@ DEFAULT_ROUND_TIMEOUT_S = 10_800  # 3 hours
 DEFAULT_MAX_ROUNDS = 10
 DEFAULT_MAX_RESTARTS_PER_ROUND = 3
 DEFAULT_MAX_ARTIFACT_MB = 256
-DEFAULT_TOOL_TIMEOUT_S = 2700  # 45 minutes (advisory; not enforced by default)
 
 # Restart back-off schedule for `copilot --continue` retries.
 RESTART_BACKOFF_S: tuple[int, ...] = (30, 120, 600)
+
+
+class ArtifactTooLargeError(OSError):
+    """Raised when a review/fix artefact exceeds ``RunConfig.max_artifact_mb``.
+
+    Inherits from ``OSError`` so existing ``except OSError`` clauses around
+    artefact reads (e.g. orchestrator footer parsing) degrade gracefully
+    instead of crashing the process."""
+
+    def __init__(self, path: Path, size_bytes: int, limit_mb: int) -> None:
+        self.path = path
+        self.size_bytes = size_bytes
+        self.limit_mb = limit_mb
+        super().__init__(
+            f"artefact {path} is {size_bytes} bytes, exceeds max_artifact_mb={limit_mb}"
+        )
+
+
+def read_artifact_text(path: Path, max_mb: int, encoding: str = "utf-8") -> str:
+    """Read an aidor artefact file, enforcing the ``max_artifact_mb`` bound.
+
+    A runaway agent could otherwise write an arbitrarily large review/fix
+    file and force the orchestrator to slurp it into memory via
+    ``Path.read_text()``. We stat the file first and refuse to read past the
+    configured ceiling. Raises :class:`ArtifactTooLargeError` (an
+    ``OSError`` subclass) when the limit is exceeded."""
+    limit_bytes = int(max_mb) * 1024 * 1024
+    size = path.stat().st_size
+    if size > limit_bytes:
+        raise ArtifactTooLargeError(path, size, int(max_mb))
+    return path.read_text(encoding=encoding)
 
 
 @dataclass
@@ -33,8 +63,6 @@ class RunConfig:
 
     allow_local_install: bool = True
     keep_awake: bool = True
-    kill_long_tools: bool = False
-    tool_timeout_s: int = DEFAULT_TOOL_TIMEOUT_S
 
     dry_run: bool = False
     resume: bool = False
