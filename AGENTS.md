@@ -27,6 +27,27 @@ reviewer declares the repo production-ready.
 5. **This file.** Keep `AGENTS.md` (this file) accurate. It is the persistent
    contract agents read every session.
 
+## Where the gates run (mandatory vs. optional)
+
+The **mandatory** enforcement point is the **local pre-commit gate**
+(`.pre-commit-config.yaml`). Every quality gate listed above — lint,
+format, supply-chain audit, test suite, coverage floor — must run there
+and block the commit on failure. That is what the coder is required to
+keep green.
+
+A **GitHub Actions / CI workflow** (`.github/workflows/*.yml`) is
+**optional and may be disabled by the human** for any reason (cost,
+flakiness, repo policy). Do **not** treat a missing, disabled, or
+manually-disabled workflow as a defect, and do **not** re-enable a
+workflow that the human disabled. If the pre-commit gate is green, the
+baseline is met regardless of CI status.
+
+If the CLI sandbox blocks you from running the local gate (e.g. `ruff`,
+`pytest`, `pip-audit` are denied above the aidor guard hook), record
+that in your fixes summary and skip — do NOT block the round on it,
+and do NOT hand-format files to fake a green gate. The orchestrator
+will run the real gate before any commit lands.
+
 ## Guard rules (enforced by aidor)
 
 - Never push to a git remote.
