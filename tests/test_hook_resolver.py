@@ -1,6 +1,7 @@
 """Tests for hook_resolver helpers — ask_user payload unwrapping and the
 preToolUse string-args normalization.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,9 +15,7 @@ def test_extract_question_plain_args():
 
 
 def test_extract_question_with_choices():
-    q = _extract_question(
-        {"question": "Pick one", "choices": ["yes", "no", "maybe"]}
-    )
+    q = _extract_question({"question": "Pick one", "choices": ["yes", "no", "maybe"]})
     assert "Pick one" in q
     assert "1. yes" in q
     assert "2. no" in q

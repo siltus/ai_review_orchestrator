@@ -6,6 +6,7 @@ Also owns:
   - assembles PhaseRecord entries from PhaseRunner results
   - decides convergence / non-convergence / abort
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,21 +14,19 @@ import json
 import logging
 import signal
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 from rich.console import Console
 from rich.prompt import Prompt
 
 from aidor.bootstrap import bootstrap
 from aidor.config import RunConfig
-from aidor.phase import PhaseEvent, PhaseRunner, PhaseResult
+from aidor.phase import PhaseEvent, PhaseResult, PhaseRunner
 from aidor.review_store import FooterParseError, ReviewFooter, ReviewStore, parse_footer
 from aidor.state import PhaseRecord, RestartRecord, RoundRecord, State
 from aidor.summary import print_summary, write_summary_md
 from aidor.wake_lock import WakeLock
-
 
 log = logging.getLogger(__name__)
 
@@ -130,9 +129,7 @@ class Orchestrator:
         self._install_signals()
 
         # Background human-question watcher.
-        self._human_watcher_task = asyncio.create_task(
-            self._human_watcher(), name="human-watcher"
-        )
+        self._human_watcher_task = asyncio.create_task(self._human_watcher(), name="human-watcher")
 
         exit_code = 1
         try:
@@ -177,7 +174,11 @@ class Orchestrator:
             # ---- Review phase -----------------------------------------------
             review_phase = _get_or_create_phase(rnd, "review", "reviewer")
             if review_phase.status not in ("done",):
-                review_path = Path(review_phase.artifact_path) if review_phase.artifact_path else self.review_store.next_review_path()
+                review_path = (
+                    Path(review_phase.artifact_path)
+                    if review_phase.artifact_path
+                    else self.review_store.next_review_path()
+                )
                 review_phase.artifact_path = str(review_path)
                 prompt = self._review_prompt(round_index=round_index, review_path=review_path)
                 result = await self._run_phase(
@@ -211,7 +212,9 @@ class Orchestrator:
             if footer and footer.is_clean_and_ready:
                 # Readiness-gate pass (new round record? No — reuse current slot as
                 # a "readiness_gate" phase or short-circuit).
-                self.console.print("[green]reviewer says CLEAN + PRODUCTION_READY — running readiness gate[/green]")
+                self.console.print(
+                    "[green]reviewer says CLEAN + PRODUCTION_READY — running readiness gate[/green]"
+                )
                 gate_phase = _get_or_create_phase(rnd, "readiness_gate", "reviewer")
                 if gate_phase.status != "done":
                     gate_path = self.review_store.next_review_path()
@@ -367,14 +370,12 @@ class Orchestrator:
                         self._pending_seen.add(key)
                         continue
                     self._pending_seen.add(key)
-                    asyncio.create_task(
-                        self._prompt_human(req), name=f"prompt-{key}"
-                    )
+                    asyncio.create_task(self._prompt_human(req), name=f"prompt-{key}")
             except OSError:  # pragma: no cover
                 pass
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=0.5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
     async def _prompt_human(self, req_path: Path) -> None:
@@ -388,22 +389,46 @@ class Orchestrator:
         role = payload.get("role", "?")
         classification = payload.get("classification", "unknown")
         context = payload.get("context", {})
+        cancel_path = req_path.with_suffix(".cancel")
 
         self.console.print()
-        self.console.rule(f"[bold magenta]Human input needed[/bold magenta] ({role}/{classification})")
-        self.console.print(question)
+        self.console.rule(
+            f"[bold magenta]Human input needed[/bold magenta] ({role}/{classification})"
+        )
+        # Indent the question body so it's visually distinct from the rest
+        # of the orchestrator's chatter.
+        for line in str(question).splitlines() or [""]:
+            self.console.print(f"  {line}")
         if context:
-            self.console.print(f"[dim]context: {json.dumps(context, ensure_ascii=False)}[/dim]")
+            self.console.print(f"  [dim]context: {json.dumps(context, ensure_ascii=False)}[/dim]")
+        self.console.print(
+            "  [dim](Ctrl-C to cancel this question and let the agent decide.)[/dim]"
+        )
 
         # Blocking prompt — run in a thread so we don't starve the event loop.
-        answer = await asyncio.to_thread(
-            Prompt.ask, "[cyan]answer[/cyan]", console=self.console, default=""
-        )
-        ans_path = req_path.with_suffix(".answer")
-        ans_path.write_text(
-            json.dumps({"answer": answer, "answered_at": _utcnow()}, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        # Catch KeyboardInterrupt INSIDE the thread so it doesn't propagate to
+        # the orchestrator and abort the whole run; instead, write a .cancel
+        # marker so the hook resolver returns "__CANCELLED__".
+        def _ask() -> str | None:
+            try:
+                return Prompt.ask("[cyan]answer[/cyan]", console=self.console, default="")
+            except (KeyboardInterrupt, EOFError):
+                return None
+
+        answer = await asyncio.to_thread(_ask)
+
+        if answer is None:
+            cancel_path.write_text(
+                json.dumps({"cancelled_at": _utcnow()}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.console.print("  [yellow]question cancelled — agent will fall back[/yellow]")
+        else:
+            ans_path = req_path.with_suffix(".answer")
+            ans_path.write_text(
+                json.dumps({"answer": answer, "answered_at": _utcnow()}, ensure_ascii=False),
+                encoding="utf-8",
+            )
         self.console.rule()
 
     # ---- Utilities ----------------------------------------------------------
@@ -462,7 +487,7 @@ def _get_or_create_phase(rnd: RoundRecord, name: str, role: str) -> PhaseRecord:
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _fmt_dur(seconds: float | None) -> str:

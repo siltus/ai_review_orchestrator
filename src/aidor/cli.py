@@ -1,4 +1,5 @@
 """Command-line interface for aidor."""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,7 +7,6 @@ import logging
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -15,15 +15,14 @@ from aidor import __version__
 from aidor.bootstrap import bootstrap
 from aidor.config import (
     DEFAULT_IDLE_TIMEOUT_S,
-    DEFAULT_MAX_ROUNDS,
     DEFAULT_MAX_RESTARTS_PER_ROUND,
+    DEFAULT_MAX_ROUNDS,
     DEFAULT_ROUND_TIMEOUT_S,
     RunConfig,
 )
 from aidor.orchestrator import Orchestrator
 from aidor.state import State
 from aidor.summary import print_summary, write_summary_md
-
 
 app = typer.Typer(
     add_completion=False,
@@ -43,7 +42,10 @@ def _version_callback(value: bool) -> None:
 @app.callback()
 def _root(
     version: bool = typer.Option(
-        False, "--version", callback=_version_callback, is_eager=True,
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
         help="Show version and exit.",
     ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable debug logging."),
@@ -59,7 +61,9 @@ def _root(
 
 @app.command()
 def run(
-    coder: str = typer.Option(..., "--coder", help="Coder model id (verbatim Copilot model string)."),
+    coder: str = typer.Option(
+        ..., "--coder", help="Coder model id (verbatim Copilot model string)."
+    ),
     reviewer: str = typer.Option(..., "--reviewer", help="Reviewer model id."),
     repo: Path = typer.Option(Path.cwd(), "--repo", help="Repository root.", resolve_path=True),
     max_rounds: int = typer.Option(DEFAULT_MAX_ROUNDS, "--max-rounds"),
@@ -67,13 +71,16 @@ def run(
     round_timeout: int = typer.Option(DEFAULT_ROUND_TIMEOUT_S, "--round-timeout", help="Seconds."),
     max_restarts: int = typer.Option(DEFAULT_MAX_RESTARTS_PER_ROUND, "--max-restarts"),
     allow_local_install: bool = typer.Option(
-        True, "--allow-local-install/--no-allow-local-install",
+        True,
+        "--allow-local-install/--no-allow-local-install",
         help="Allow repo-scoped package installs when a lockfile is detected.",
     ),
     keep_awake: bool = typer.Option(True, "--keep-awake/--no-keep-awake"),
     resume: bool = typer.Option(False, "--resume", help="Resume from existing state.json."),
     dry_run: bool = typer.Option(False, "--dry-run"),
-    copilot_binary: str = typer.Option("copilot", "--copilot-binary", help="Path to copilot binary."),
+    copilot_binary: str = typer.Option(
+        "copilot", "--copilot-binary", help="Path to copilot binary."
+    ),
 ) -> None:
     """Run the full review↔fix loop until convergence, abort, or max rounds."""
     config = RunConfig(
@@ -131,7 +138,9 @@ def status(
 @app.command()
 def summary(
     repo: Path = typer.Option(Path.cwd(), "--repo", resolve_path=True),
-    write: bool = typer.Option(True, "--write/--no-write", help="Write summary.md as well as print."),
+    write: bool = typer.Option(
+        True, "--write/--no-write", help="Write summary.md as well as print."
+    ),
 ) -> None:
     """Render the summary table; optionally (re)write summary.md."""
     state_path = repo / ".aidor" / "state.json"
@@ -175,35 +184,49 @@ def doctor(
     copilot_binary: str = typer.Option("copilot", "--copilot-binary"),
 ) -> None:
     """Run environment checks."""
-    import os
     import subprocess
 
     ok = True
 
     def check(label: str, cond: bool, detail: str = "", *, required: bool = True) -> None:
         nonlocal ok
-        mark = "[green]OK[/green]" if cond else ("[red]FAIL[/red]" if required else "[yellow]SKIP[/yellow]")
+        mark = (
+            "[green]OK[/green]"
+            if cond
+            else ("[red]FAIL[/red]" if required else "[yellow]SKIP[/yellow]")
+        )
         console.print(f"{mark} {label}{(' - ' + detail) if detail else ''}")
         if not cond and required:
             ok = False
 
     check("Python >= 3.11", sys.version_info >= (3, 11), f"python={sys.version.split()[0]}")
     copilot_path = shutil.which(copilot_binary)
-    check(f"copilot binary ({copilot_binary}) on PATH", copilot_path is not None, copilot_path or "")
+    check(
+        f"copilot binary ({copilot_binary}) on PATH", copilot_path is not None, copilot_path or ""
+    )
     if copilot_path:
         try:
             out = subprocess.run(
                 [copilot_path, "--version"], capture_output=True, text=True, timeout=10
             )
-            check("copilot --version", out.returncode == 0, out.stdout.strip() or out.stderr.strip())
+            check(
+                "copilot --version", out.returncode == 0, out.stdout.strip() or out.stderr.strip()
+            )
         except Exception as exc:  # pragma: no cover
             check("copilot --version", False, str(exc))
     check("repo is a directory", repo.is_dir(), str(repo))
-    check("AGENTS.md exists (optional)", (repo / "AGENTS.md").exists(),
-          "will be created by bootstrap", required=False)
+    check(
+        "AGENTS.md exists (optional)",
+        (repo / "AGENTS.md").exists(),
+        "will be created by bootstrap",
+        required=False,
+    )
     if sys.platform == "linux":
-        check("systemd-inhibit (keep-awake)", shutil.which("systemd-inhibit") is not None,
-              required=False)
+        check(
+            "systemd-inhibit (keep-awake)",
+            shutil.which("systemd-inhibit") is not None,
+            required=False,
+        )
     if sys.platform == "win32":
         check("Windows wake-lock via ctypes", True)
 

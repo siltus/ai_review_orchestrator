@@ -1,14 +1,28 @@
 repos:
   - repo: local
     hooks:
+      - id: ruff-check
+        name: ruff (lint)
+        entry: python -m ruff check
+        language: system
+        types: [python]
+        pass_filenames: false
+        args: [src, tests]
+        stages: [pre-commit]
+      - id: ruff-format
+        name: ruff (format check)
+        entry: python -m ruff format --check
+        language: system
+        types: [python]
+        pass_filenames: false
+        args: [src, tests]
+        stages: [pre-commit]
       - id: pip-audit
         name: pip-audit (supply-chain vulnerability scan)
         entry: python -m pip_audit --skip-editable
         language: system
         pass_filenames: false
         stages: [pre-commit]
-        # Audits the active environment's installed packages against the
-        # PyPI advisory database. Required by AGENTS.md baseline #1.
       - id: pytest
         name: pytest (fast test suite)
         entry: python -m pytest -q

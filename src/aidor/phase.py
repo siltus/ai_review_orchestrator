@@ -4,6 +4,7 @@ events, return a completion record.
 The orchestrator drives one phase at a time (review / fix / readiness-gate).
 Each phase gets its own subprocess and its own OTel JSONL file.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,14 +14,15 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any
 
-from aidor.config import RunConfig, RESTART_BACKOFF_S
+from aidor.config import RESTART_BACKOFF_S, RunConfig
 from aidor.guard_profile import build_flags
 from aidor.telemetry import PhaseMetrics, parse_otel_file
-
 
 log = logging.getLogger(__name__)
 
@@ -80,9 +82,7 @@ class PhaseRunner:
         self.artifact_path = artifact_path
         self.on_event = on_event or (lambda _: None)
 
-        self.transcript_path = (
-            config.transcripts_dir / f"{role}-{phase_index:04d}.md"
-        )
+        self.transcript_path = config.transcripts_dir / f"{role}-{phase_index:04d}.md"
         self.otel_path = config.logs_dir / f"otel-{role}-{phase_index:04d}.jsonl"
         self.stderr_path = config.logs_dir / f"{role}-{phase_index:04d}.stderr"
 
@@ -119,7 +119,9 @@ class PhaseRunner:
                         "at": _utcnow(),
                     }
                 )
-                self._emit(PhaseEvent("restart", data={"backoff_s": backoff, "reason": stop_reason}))
+                self._emit(
+                    PhaseEvent("restart", data={"backoff_s": backoff, "reason": stop_reason})
+                )
                 await asyncio.sleep(backoff)
             except asyncio.CancelledError:
                 stop_reason = "aborted"
@@ -261,7 +263,7 @@ class PhaseRunner:
         # Wait for the process to actually exit and drain the rest.
         try:
             await asyncio.wait_for(proc.wait(), timeout=30)
-        except asyncio.TimeoutError:  # pragma: no cover - defensive
+        except TimeoutError:  # pragma: no cover - defensive
             await self._terminate(proc, force=True)
             await proc.wait()
 
@@ -382,22 +384,22 @@ def _deep_find(obj: Any, key: str) -> Any:
 
 
 def _utcnow() -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class _suppress:
     def __init__(self, *excs: type[BaseException]) -> None:
         self.excs = excs
 
-    def __enter__(self) -> "_suppress":
+    def __enter__(self) -> _suppress:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001 - stdlib signature
         return exc_type is not None and issubclass(exc_type, self.excs)
 
-    async def __aenter__(self) -> "_suppress":  # pragma: no cover
+    async def __aenter__(self) -> _suppress:  # pragma: no cover
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:  # pragma: no cover

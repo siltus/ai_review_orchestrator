@@ -3,15 +3,15 @@
 The state file is the source of truth for resume semantics and for the final
 summary. It is written atomically after every phase transition.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import tempfile
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
-
 
 PhaseName = Literal["review", "fix", "readiness_gate"]
 PhaseStatus = Literal["pending", "running", "done", "failed", "aborted"]
@@ -75,7 +75,7 @@ class State:
         return json.dumps(_to_plain(self), indent=2, sort_keys=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "State":
+    def from_json(cls, raw: str) -> State:
         data = json.loads(raw)
         return _from_plain(data)
 
@@ -95,7 +95,7 @@ class State:
             raise
 
     @classmethod
-    def load(cls, path: Path) -> "State":
+    def load(cls, path: Path) -> State:
         return cls.from_json(path.read_text(encoding="utf-8"))
 
     # ---- Helpers -----------------------------------------------------------

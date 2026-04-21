@@ -1,10 +1,10 @@
 """Runtime configuration for a single aidor run."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
-
 
 DEFAULT_IDLE_TIMEOUT_S = 120
 DEFAULT_ROUND_TIMEOUT_S = 10_800  # 3 hours
@@ -12,7 +12,7 @@ DEFAULT_MAX_ROUNDS = 10
 DEFAULT_MAX_RESTARTS_PER_ROUND = 3
 DEFAULT_MAX_ARTIFACT_MB = 256
 DEFAULT_TELEGRAM_REPING_S = 1800  # 30 minutes
-DEFAULT_TOOL_TIMEOUT_S = 2700     # 45 minutes (advisory; not enforced by default)
+DEFAULT_TOOL_TIMEOUT_S = 2700  # 45 minutes (advisory; not enforced by default)
 
 # Restart back-off schedule for `copilot --continue` retries.
 RESTART_BACKOFF_S: tuple[int, ...] = (30, 120, 600)

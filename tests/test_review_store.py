@@ -1,10 +1,10 @@
 """Tests for review_store + footer parsing."""
+
 from __future__ import annotations
 
 import pytest
 
 from aidor.review_store import FooterParseError, ReviewStore, parse_footer
-
 
 CLEAN_AND_READY = """\
 # Review

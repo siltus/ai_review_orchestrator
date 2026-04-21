@@ -1,13 +1,12 @@
 """End-to-end smoke test via the fake-copilot shim."""
+
 from __future__ import annotations
 
 import asyncio
-import os
 
 import pytest
 
 from aidor.orchestrator import Orchestrator
-
 
 CLEAN_REVIEW = """\
 # Review

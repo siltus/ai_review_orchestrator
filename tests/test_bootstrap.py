@@ -1,9 +1,10 @@
 """Unit tests for bootstrap's idempotent write."""
+
 from __future__ import annotations
 
 import json
 
-from aidor.bootstrap import bootstrap, MANAGED_START, MANAGED_END
+from aidor.bootstrap import MANAGED_END, MANAGED_START, bootstrap
 
 
 def test_bootstrap_creates_all_artifacts(run_config):
@@ -24,7 +25,7 @@ def test_bootstrap_creates_all_artifacts(run_config):
 def test_bootstrap_is_idempotent(run_config):
     bootstrap(run_config)
     first = (run_config.repo / "AGENTS.md").read_text(encoding="utf-8")
-    second_actions = bootstrap(run_config)
+    bootstrap(run_config)
     second = (run_config.repo / "AGENTS.md").read_text(encoding="utf-8")
     assert first == second
     # Second call may still re-write the config snapshot, but managed block
@@ -47,7 +48,9 @@ def test_hooks_json_bakes_python_interpreter(run_config):
                 assert "aidor.hook_resolver" in cmd[key]
                 assert "aidor-hook" not in cmd[key]
                 # sys.executable (or its quoted form) should appear.
-                assert sys.executable.replace("\\", "\\\\") in cmd[key] or sys.executable in cmd[key]
+                assert (
+                    sys.executable.replace("\\", "\\\\") in cmd[key] or sys.executable in cmd[key]
+                )
             # PowerShell specifically needs the call operator to invoke a
             # quoted executable, otherwise PS parses it as a bare string.
             assert cmd["powershell"].startswith("& ")

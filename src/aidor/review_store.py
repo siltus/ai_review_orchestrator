@@ -9,24 +9,18 @@ The AIDOR footer is expected at the end of every reviewer file:
     <!-- AIDOR:ISSUES={"critical":0,"major":0,"minor":0,"nit":0} -->
     <!-- AIDOR:PRODUCTION_READY=true|false -->
 """
+
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-
-FOOTER_STATUS_RE = re.compile(
-    r"<!--\s*AIDOR:STATUS=(CLEAN|ISSUES_FOUND)\s*-->", re.IGNORECASE
-)
-FOOTER_ISSUES_RE = re.compile(
-    r"<!--\s*AIDOR:ISSUES=(\{[^}]*\})\s*-->", re.IGNORECASE
-)
-FOOTER_READY_RE = re.compile(
-    r"<!--\s*AIDOR:PRODUCTION_READY=(true|false)\s*-->", re.IGNORECASE
-)
+FOOTER_STATUS_RE = re.compile(r"<!--\s*AIDOR:STATUS=(CLEAN|ISSUES_FOUND)\s*-->", re.IGNORECASE)
+FOOTER_ISSUES_RE = re.compile(r"<!--\s*AIDOR:ISSUES=(\{[^}]*\})\s*-->", re.IGNORECASE)
+FOOTER_READY_RE = re.compile(r"<!--\s*AIDOR:PRODUCTION_READY=(true|false)\s*-->", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -160,9 +154,11 @@ class ReviewStore:
         timestamp: datetime | None,
     ) -> Path:
         directory.mkdir(parents=True, exist_ok=True)
-        existing = [_index_from_name(p.name, regex) for p in directory.iterdir() if regex.match(p.name)]
+        existing = [
+            _index_from_name(p.name, regex) for p in directory.iterdir() if regex.match(p.name)
+        ]
         next_index = (max(existing) + 1) if existing else 1
-        ts = (timestamp or datetime.now(timezone.utc)).strftime("%Y%m%d-%H%M%S")
+        ts = (timestamp or datetime.now(UTC)).strftime("%Y%m%d-%H%M%S")
         return directory / f"{prefix}-{next_index:04d}-{ts}.md"
 
 

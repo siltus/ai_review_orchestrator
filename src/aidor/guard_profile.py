@@ -4,10 +4,10 @@ The flag set implements most of the Guard layer (§9 of plan.md). The path-
 containment check that cannot be expressed as a flag pattern lives in the
 hook resolver (`hook_resolver.py`).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # Tools allowed unconditionally. Reading and writing are bounded by Copilot's
 # trusted-directory mechanism (we launch from the repo root and never pass
@@ -119,10 +119,7 @@ def detect_local_install_available(repo: Path) -> bool:
     """Return True if the repo contains a lockfile / manifest indicating a
     local install is meaningful (and therefore permissible if
     --allow-local-install is on)."""
-    for marker, _ in _LOCAL_INSTALL_MARKERS:
-        if (repo / marker).exists():
-            return True
-    return False
+    return any((repo / marker).exists() for marker, _ in _LOCAL_INSTALL_MARKERS)
 
 
 def _expand_shell_aliases(rules: tuple[str, ...]) -> list[str]:

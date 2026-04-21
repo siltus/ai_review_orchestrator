@@ -15,6 +15,7 @@ Our resolver implements the four-step pipeline for `ask_user` questions:
 
 Every Q&A is audited to .aidor/logs/qa.jsonl.
 """
+
 from __future__ import annotations
 
 import json
@@ -23,10 +24,9 @@ import re
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 POLL_INTERVAL_S = 0.25
 
@@ -114,7 +114,7 @@ def _on_permission_request(event: str, payload: dict[str, Any]) -> dict[str, Any
 
 def _on_notification(event: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     nt = payload.get("notification_type", "")
-    _log_breadcrumb(payload, f"notification type={nt!r} msg={payload.get('message','')!r}")
+    _log_breadcrumb(payload, f"notification type={nt!r} msg={payload.get('message', '')!r}")
     return None
 
 
@@ -175,9 +175,7 @@ def _handle_ask_user(payload: dict[str, Any], args: dict[str, Any]) -> dict[str,
     }
 
 
-def _classify_and_answer(
-    repo: Path, question: str
-) -> tuple[dict[str, Any], str | None, str]:
+def _classify_and_answer(repo: Path, question: str) -> tuple[dict[str, Any], str | None, str]:
     """Returns (class_dict, answer_or_None, source). Source is one of
     'policy', 'state', or '' (if caller must ask the human)."""
     classes = _load_question_classes()
@@ -213,9 +211,7 @@ def _match_class(question: str, classes_cfg: dict[str, Any]) -> dict[str, Any]:
         kws = cls.get("keywords", [])
         if any(kw.lower() in q.lower() for kw in kws):
             return cls
-    fallback = classes_cfg.get(
-        "fallback", {"name": "unknown", "deterministic": "ask_human"}
-    )
+    fallback = classes_cfg.get("fallback", {"name": "unknown", "deterministic": "ask_human"})
     return fallback
 
 
@@ -296,18 +292,13 @@ def _ask_human(repo: Path, question: str, class_name: str) -> str:
 # ---- Path / shell defensive checks ----------------------------------------
 
 
-def _check_path_containment(
-    payload: dict[str, Any], args: dict[str, Any]
-) -> dict[str, Any] | None:
+def _check_path_containment(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any] | None:
     repo = _repo_root(payload)
     for key in ("path", "file", "filePath", "target"):
         value = args.get(key)
         if value:
             target = Path(value)
-            if not target.is_absolute():
-                target = (repo / target).resolve()
-            else:
-                target = target.resolve()
+            target = (repo / target).resolve() if not target.is_absolute() else target.resolve()
             try:
                 target.relative_to(repo.resolve())
             except ValueError:
@@ -320,10 +311,8 @@ def _check_path_containment(
     return None
 
 
-def _check_shell_escape(
-    payload: dict[str, Any], args: dict[str, Any]
-) -> dict[str, Any] | None:
-    cmd = (args.get("command") or args.get("cmd") or "")
+def _check_shell_escape(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any] | None:
+    cmd = args.get("command") or args.get("cmd") or ""
     if not isinstance(cmd, str) or not cmd:
         return None
     repo = _repo_root(payload)
@@ -395,9 +384,7 @@ def _extract_question(args: dict[str, Any]) -> str:
 
     choices = unwrapped.get("choices")
     if isinstance(choices, list) and choices:
-        rendered = "\n".join(
-            f"  {i + 1}. {c}" for i, c in enumerate(choices) if isinstance(c, str)
-        )
+        rendered = "\n".join(f"  {i + 1}. {c}" for i, c in enumerate(choices) if isinstance(c, str))
         if rendered:
             question = f"{question}\n\nChoices:\n{rendered}"
     return question
@@ -454,7 +441,7 @@ def _log_breadcrumb(payload: dict[str, Any], msg: str) -> None:
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _try_unlink(p: Path) -> None:

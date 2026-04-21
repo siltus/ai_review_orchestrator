@@ -8,6 +8,7 @@ On Windows uses SetThreadExecutionState. On Linux uses `systemd-inhibit` as a
 best-effort subprocess wrapper (requires the binary). On unsupported / absent
 platforms the context manager is a no-op and logs a single warning.
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,8 +16,6 @@ import shutil
 import subprocess
 import sys
 from types import TracebackType
-from typing import Type
-
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +27,7 @@ class WakeLock:
         self._windows_prev: int | None = None
         self._linux_proc: subprocess.Popen | None = None
 
-    def __enter__(self) -> "WakeLock":
+    def __enter__(self) -> WakeLock:
         if not self.enabled:
             return self
         if sys.platform == "win32":
@@ -43,7 +42,7 @@ class WakeLock:
 
     def __exit__(
         self,
-        exc_type: Type[BaseException] | None,
+        exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:

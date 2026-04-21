@@ -10,6 +10,7 @@ We only care about a handful of attributes per invocation:
     - github.copilot.tool.call.count (or execute_tool span count)
 Turn counts / premium requests are captured opportunistically if present.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,7 +26,7 @@ class PhaseMetrics:
     tool_calls: int = 0
     turns: int = 0
 
-    def __iadd__(self, other: "PhaseMetrics") -> "PhaseMetrics":
+    def __iadd__(self, other: PhaseMetrics) -> PhaseMetrics:
         self.tokens_in += other.tokens_in
         self.tokens_out += other.tokens_out
         self.cost += other.cost

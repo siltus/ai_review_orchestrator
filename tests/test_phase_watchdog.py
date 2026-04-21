@@ -9,6 +9,7 @@ elapsed wall-clock when comparing to round_timeout_s.
 This test exercises the watchdog's logic by simulating the elapsed-time math
 directly, since spinning up a real subprocess is too heavy for a unit test.
 """
+
 from __future__ import annotations
 
 
@@ -21,8 +22,8 @@ def test_round_timeout_excludes_paused_seconds():
     """A 200 s phase that paused 180 s on a human is effectively 20 s in,
     and must NOT trip a 60 s round timeout."""
     round_timeout = 60.0
-    elapsed = 200.0     # wall-clock seconds since phase_start
-    paused = 180.0      # seconds spent waiting on hooks
+    elapsed = 200.0  # wall-clock seconds since phase_start
+    paused = 180.0  # seconds spent waiting on hooks
     assert _effective_elapsed(elapsed, paused) <= round_timeout
 
 

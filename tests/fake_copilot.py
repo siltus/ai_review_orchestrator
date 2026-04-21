@@ -15,6 +15,7 @@ behavior without modifying this file:
     FAKE_COPILOT_STOP_REASON     value for the final stopReason event
                                   (default "end_turn")
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,7 +23,6 @@ import json
 import os
 import sys
 import time
-
 
 DEFAULT_REVIEW = """\
 # Review

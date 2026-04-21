@@ -1,4 +1,5 @@
 """Tests for guard_profile flag matrix."""
+
 from __future__ import annotations
 
 from aidor.guard_profile import (
@@ -53,10 +54,9 @@ def test_shell_rules_are_aliased_to_bash_and_powershell(tmp_path):
     powershell(...) so the Guard matrix matches whichever underlying tool
     name Copilot uses on this platform."""
     flags = build_flags(tmp_path, allow_local_install=False)
-    assert any("--deny-tool=shell(git push)" == f for f in flags)
-    assert any("--deny-tool=bash(git push)" == f for f in flags)
-    assert any("--deny-tool=powershell(git push)" == f for f in flags)
-    assert any("--allow-tool=shell(git status)" == f for f in flags)
-    assert any("--allow-tool=bash(git status)" == f for f in flags)
-    assert any("--allow-tool=powershell(git status)" == f for f in flags)
-
+    assert any(f == "--deny-tool=shell(git push)" for f in flags)
+    assert any(f == "--deny-tool=bash(git push)" for f in flags)
+    assert any(f == "--deny-tool=powershell(git push)" for f in flags)
+    assert any(f == "--allow-tool=shell(git status)" for f in flags)
+    assert any(f == "--allow-tool=bash(git status)" for f in flags)
+    assert any(f == "--allow-tool=powershell(git status)" for f in flags)

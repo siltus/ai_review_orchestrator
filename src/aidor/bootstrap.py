@@ -17,15 +17,14 @@ Writes / refreshes:
 Template sources live under `aidor/agent_templates/` and `aidor/policies/`
 (shipped with the wheel).
 """
+
 from __future__ import annotations
 
 import json
 import sys
 from importlib import resources
-from pathlib import Path
 
 from aidor.config import RunConfig
-
 
 MANAGED_START = "<!-- AIDOR:MANAGED-BLOCK-START -->"
 MANAGED_END = "<!-- AIDOR:MANAGED-BLOCK-END -->"
@@ -136,14 +135,10 @@ def bootstrap(config: RunConfig) -> list[str]:
     if not config.allowed_exceptions_path.exists():
         seed = _read_template("policies/allowed_exceptions.yml")
         config.allowed_exceptions_path.write_text(seed, encoding="utf-8")
-        actions.append(
-            f"seeded {config.allowed_exceptions_path.relative_to(repo).as_posix()}"
-        )
+        actions.append(f"seeded {config.allowed_exceptions_path.relative_to(repo).as_posix()}")
 
     # ---- config snapshot --------------------------------------------------
-    config.config_snapshot_path.write_text(
-        _render_config_snapshot(config), encoding="utf-8"
-    )
+    config.config_snapshot_path.write_text(_render_config_snapshot(config), encoding="utf-8")
     actions.append(f"wrote {config.config_snapshot_path.relative_to(repo).as_posix()}")
 
     # ---- .gitignore entry for .aidor/ -------------------------------------
@@ -178,9 +173,7 @@ def _merge_managed_block(*, existing: str, block: str) -> str:
     end_idx = existing.find(MANAGED_END)
     if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
         end_idx_full = end_idx + len(MANAGED_END)
-        prefix = existing[:start_idx].rstrip() + (
-            "\n\n" if existing[:start_idx].strip() else ""
-        )
+        prefix = existing[:start_idx].rstrip() + ("\n\n" if existing[:start_idx].strip() else "")
         suffix = existing[end_idx_full:].lstrip("\n")
         merged = prefix + block.strip() + ("\n\n" + suffix if suffix else "\n")
         return merged
@@ -204,7 +197,5 @@ def _render_config_snapshot(config: RunConfig) -> str:
             for ik, iv in v.items():
                 lines.append(f"{ik} = {json.dumps(iv)}")
         else:
-            lines.append(f'{k} = {json.dumps(str(v))}')
+            lines.append(f"{k} = {json.dumps(str(v))}")
     return "\n".join(lines) + "\n"
-
-

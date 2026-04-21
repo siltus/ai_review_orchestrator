@@ -1,7 +1,8 @@
 """Tests for State (de)serialisation + atomic save."""
+
 from __future__ import annotations
 
-from aidor.state import PhaseRecord, RestartRecord, RoundRecord, State
+from aidor.state import PhaseRecord, RestartRecord, State
 
 
 def test_round_trip(tmp_path):
@@ -41,5 +42,7 @@ def test_save_is_atomic(tmp_path):
     s2 = State(status="converged")
     s2.save(path)
     assert path.read_text(encoding="utf-8") != original
-    assert not any(p.name.startswith("state.") and p.suffix == ".json" and p != path
-                   for p in tmp_path.iterdir())
+    assert not any(
+        p.name.startswith("state.") and p.suffix == ".json" and p != path
+        for p in tmp_path.iterdir()
+    )
