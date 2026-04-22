@@ -59,23 +59,77 @@ create it yourself. On every round:
 
 ## Bootstrapping the local gate
 
-The guard permits `pip install` of common dev/test tools (`pytest`,
-`ruff`, `pre-commit`, `pip-audit`, `pyright`, `coverage`, `mypy`, ...)
-even on a fresh repo without a lockfile. It also accepts any project
-dependency anchor (`pyproject.toml`, `setup.{cfg,py}`,
-`requirements*.txt`, `poetry.lock`, `uv.lock`, `Pipfile.lock`) as
-install scope, so `pip install -e .` and `pip install -r
-requirements-dev.txt` are allowed when those files exist.
+**Always run the gate inside the project's virtualenv, not against
+system Python.** The repo's pre-commit config / `pyproject.toml` pin
+specific tool versions; running ambient interpreters silently uses the
+wrong versions and lets "missing" tools (e.g. `pip-audit`, `pre-commit`,
+`pytest-cov`) fall through to a fake-green result.
 
-`--user`, `--target`, `--prefix`, and `--root` are always denied — they
-write outside the project tree. Mixing a dev tool with a non-dev
-package in one command is also denied (no smuggling). Always install
-into the project-local `.venv`, never globally.
+Bootstrap order on every round, BEFORE running any gate command:
+
+1. **Locate or create `.venv`.**
+   - If `.venv\Scripts\python.exe` (Windows) or `.venv/bin/python`
+     (POSIX) exists, use it.
+   - Else create one: `python -m venv .venv` (the guard allows this —
+     `python -m venv` is on the allowlist and writes inside the repo).
+   - Do NOT use `Activate.ps1` / `source activate` — they need
+     compound shell forms (`if { ... }`) that the clause splitter
+     rejects, and you cannot rely on env vars persisting across tool
+     calls anyway. Instead, **invoke the venv interpreter directly by
+     full path** every time: `.\.venv\Scripts\python.exe -m ...` on
+     Windows, `./.venv/bin/python -m ...` on POSIX.
+
+2. **Install the dev/gate dependencies into `.venv`.** Find the dev
+   anchor and install ALL of it — not just the runtime
+   `requirements.txt`:
+   - `requirements-dev.txt` (or `-test.txt` / `_dev.txt` /
+     `_test.txt`) → `.\.venv\Scripts\python.exe -m pip install -r
+     requirements-dev.txt`
+   - `pyproject.toml` with a `[project.optional-dependencies] dev` /
+     `test` extra → `.\.venv\Scripts\python.exe -m pip install -e
+     ".[dev]"` (or `"[test]"`).
+   - Plain `pyproject.toml` with no extras → `.\.venv\Scripts\python.exe
+     -m pip install -e .` plus the curated tools you need by name
+     (`pytest pytest-cov ruff pre-commit pip-audit`).
+
+3. **Run every gate command via the venv interpreter.** Examples:
+   `.\.venv\Scripts\python.exe -m ruff check .`,
+   `.\.venv\Scripts\python.exe -m pytest --cov=. --cov-fail-under=90`,
+   `.\.venv\Scripts\python.exe -m pip_audit -r requirements.txt`,
+   `.\.venv\Scripts\pre-commit.exe run --all-files`. If a gate tool
+   is reported missing, that means step 2 didn't install it — go
+   back and install it; do NOT skip the gate and document it as
+   "missing".
+
+The guard's install gate cooperates with this:
+
+- `pip install` of common dev/test tools (`pytest`, `ruff`,
+  `pre-commit`, `pip-audit`, `pyright`, `coverage`, `mypy`, ...) is
+  permitted even on a fresh repo without a lockfile.
+- Any project dependency anchor (`pyproject.toml`,
+  `setup.{cfg,py}`, `requirements*.txt`, `poetry.lock`, `uv.lock`,
+  `Pipfile.lock`) authorises `pip install -e .` and `pip install -r
+  <file>` against that anchor.
+- `--user`, `--target`, `--prefix`, `--root` are always denied — they
+  write outside the project tree. Mixing a dev tool with a non-dev
+  package in one command is also denied (no smuggling).
 
 If a non-Python toolchain is needed (`npm`, `dotnet`, `cargo`, `gradle`,
-`go`), the corresponding install commands follow the same shape: a
-manifest/lockfile (`package.json`, `*.csproj`, `Cargo.toml`,
-`build.gradle`, `go.mod`) acts as the anchor.
+`go`), the install commands follow the same anchor pattern: a manifest
+or lockfile (`package.json`, `*.csproj`, `Cargo.toml`,
+`build.gradle`, `go.mod`) authorises project-scoped installs; bare
+`npm install -g`, `cargo install <runtime-crate>` etc. are denied.
+
+## Shell-clause hygiene
+
+The guard splits commands on `;`, `&&`, `||`, `|`, `&` BEFORE matching
+each clause against the allowlist. It does NOT descend into PowerShell
+`{ ... }` script blocks — so a compound form like `if (Test-Path X) {
+foo; bar }` will be rejected as "shell clause not in aidor allowlist"
+because the body never gets parsed into clauses. Write linear
+`statement; statement; statement` chains instead. The `python -m venv`
++ direct-`.venv\Scripts\python.exe` pattern above avoids the issue
+entirely.
 
 ## Scratch files (transient command output)
 
