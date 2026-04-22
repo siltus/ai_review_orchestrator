@@ -136,8 +136,9 @@ aidor clean -y          # delete .aidor/ (keeps AGENTS.md + .github/agents/)
 The aidor repo dogfoods its own quality bar — pre-commit and CI run:
 
 1. `ruff check` + `ruff format --check`
-2. `pip-audit --skip-editable`
-3. `pytest`
+2. `pyright`
+3. `pip-audit --skip-editable`
+4. `pytest`
 
 > **Operator note:** the GitHub Actions `ci` workflow can be administratively
 > disabled (Repository → Settings → Actions → Workflows → `ci` → "Disable
@@ -157,6 +158,7 @@ To run them once (same commands CI runs, including the coverage gate):
 ```pwsh
 python -m ruff check src tests
 python -m ruff format --check src tests
+python -m pyright
 python -m pip_audit --skip-editable
 python -m pytest --cov=aidor --cov-report=term-missing --cov-fail-under=90
 ```

@@ -1,13 +1,14 @@
 repos:
   - repo: local
     hooks:
-      # All four hooks shell out through `scripts/precommit_shim.py`,
-      # which re-execs into the repo-local `.venv` interpreter. This
-      # keeps the gate hermetic: pre-commit can be launched from any
-      # `python` on PATH and the hooks still resolve `aidor`,
-      # `pip_audit`, `ruff`, and `pytest` from the project venv. See
-      # the docstring in `scripts/precommit_shim.py` (regression for
-      # review-0001).
+      # All five hooks (`ruff-check`, `ruff-format`, `pyright`,
+      # `pip-audit`, `pytest`) shell out through
+      # `scripts/precommit_shim.py`, which re-execs into the repo-local
+      # `.venv` interpreter. This keeps the gate hermetic: pre-commit
+      # can be launched from any `python` on PATH and the hooks still
+      # resolve their tools (`aidor`, `pip_audit`, `ruff`, `pyright`,
+      # `pytest`) from the project venv. See the docstring in
+      # `scripts/precommit_shim.py` (regression for review-0001).
       - id: ruff-check
         name: ruff (lint)
         entry: python scripts/precommit_shim.py -m ruff check

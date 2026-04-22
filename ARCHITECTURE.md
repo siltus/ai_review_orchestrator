@@ -211,12 +211,15 @@ phase. (This was the bug that killed the first dogfood run.)
 
 ## Quality gates
 
-The repo runs three gates in pre-commit and CI:
+The repo runs four gates in pre-commit and CI:
 
 1. **`ruff check` + `ruff format --check`** — lint + style.
-2. **`pip-audit --skip-editable`** — supply-chain vulnerability scan
+2. **`pyright`** — static type check. Not part of the AGENTS.md agent
+   contract, but enforced as a repo gate to keep the typed public API
+   honest.
+3. **`pip-audit --skip-editable`** — supply-chain vulnerability scan
    (AGENTS.md baseline #1).
-3. **`pytest`** — full unit suite. Both pre-commit and CI invoke pytest with
+4. **`pytest`** — full unit suite. Both pre-commit and CI invoke pytest with
    `--cov=aidor --cov-fail-under=90` so the AGENTS.md ≥ 90 % line-coverage
    floor is enforced before a commit lands and again in CI.
 

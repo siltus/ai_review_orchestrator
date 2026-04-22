@@ -36,6 +36,11 @@ tools:
   - Grep
   - grep
   - find
+  # `rg` / `ripgrep` is the dedicated code-search surface preferred by
+  # the AGENTS.md tool guidance; allowlist it explicitly so guarded
+  # runs don't have to fall back to the shell allowlist (review-0001).
+  - rg
+  - ripgrep
 
   # ---- File writes / edits (path containment enforced) --------------
   - write

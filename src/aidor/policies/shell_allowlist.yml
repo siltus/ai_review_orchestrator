@@ -39,12 +39,12 @@ rules:
   # ---- Python -----------------------------------------------------------
   # `python -m <module>` is allowed only for a curated set of modules.
   # `python <script.py>` is also allowed (path-containment check applies).
-  - { exe: python,  args_regex: '^-m\s+(pytest|ruff|mypy|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
+  - { exe: python,  args_regex: '^-m\s+(pytest|ruff|mypy|pyright|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
   - { exe: python,  args_regex: '^(?!-m\b).*' }
-  - { exe: python3, args_regex: '^-m\s+(pytest|ruff|mypy|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
+  - { exe: python3, args_regex: '^-m\s+(pytest|ruff|mypy|pyright|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
   - { exe: python3, args_regex: '^(?!-m\b).*' }
-  - { exe: py,      args_regex: '^-\d(\.\d+)?\s+-m\s+(pytest|ruff|mypy|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
-  - { exe: py,      args_regex: '^-m\s+(pytest|ruff|mypy|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
+  - { exe: py,      args_regex: '^-\d(\.\d+)?\s+-m\s+(pytest|ruff|mypy|pyright|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
+  - { exe: py,      args_regex: '^-m\s+(pytest|ruff|mypy|pyright|coverage|pip|pip_audit|pre_commit|build|venv|aidor)( .*)?$' }
 
   # `pip` non-install subcommands. `pip install` is handled in code.
   - { exe: pip,  args_regex: '^(list|show|freeze|check|index|debug|cache|--version|--help)( .*)?$' }
@@ -57,7 +57,25 @@ rules:
   # `.aidor/shell_allowlist.yml` extension).
   - { exe: git, args_regex: '^(status|log|diff|show|branch|rev-parse|ls-files|ls-tree|cat-file|describe|reflog|blame|grep|symbolic-ref|for-each-ref|name-rev|shortlog|whatchanged)( .*)?$' }
   # Local-write subset (no push/remote-write).
-  - { exe: git, args_regex: '^(add|commit|stash|checkout|reset|restore|switch|mv|rm|merge|rebase|cherry-pick|revert|clean|init|update-index|notes|worktree)( .*)?$' }
+  #
+  # Deliberately EXCLUDES history-rewriting / data-loss commands —
+  # `reset`, `clean`, `checkout`, `rebase`, `cherry-pick` — because an
+  # autonomous coder can use them to silently wipe uncommitted work or
+  # rewrite published history in the target repo. Use `restore` /
+  # `switch` for the safe forward-only file-and-branch operations the
+  # agents actually need; opt back in via per-repo
+  # `.aidor/shell_allowlist.yml` if a workflow genuinely requires them.
+  # (regression: review-0001)
+  - { exe: git, args_regex: '^(add|commit|restore|switch|mv|rm|merge|revert|init|update-index|notes)( .*)?$' }
+  # `git stash` and `git worktree` are restricted at the SUBCOMMAND
+  # level — the bare top-level verbs would otherwise let an autonomous
+  # coder silently destroy saved work via `git stash drop` / `clear` or
+  # `git worktree remove --force`. Allow only non-destructive
+  # subcommands here; opt back in via per-repo
+  # `.aidor/shell_allowlist.yml` if a workflow genuinely needs the
+  # destructive forms. (regression: review-0002)
+  - { exe: git, args_regex: '^stash(\s+(list|show|push|save|pop|apply|branch|create|store)(\s.*)?)?$' }
+  - { exe: git, args_regex: '^worktree\s+(add|list|lock|unlock|move|prune|repair)(\s.*)?$' }
 
   # ---- Copilot CLI introspection ---------------------------------------
   - { exe: copilot, args_regex: '^(--version|--help|help|list-sessions|view-session|status)( .*)?$' }
