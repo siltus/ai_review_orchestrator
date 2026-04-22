@@ -84,6 +84,10 @@ def test_bootstrap_gitignores_both_aidor_and_hooks_on_fresh_repo(run_config):
     lines = {ln.strip() for ln in gi.read_text(encoding="utf-8").splitlines()}
     assert ".aidor/" in lines
     assert ".github/hooks/aidor.json" in lines
+    # Aidor-managed agent templates are refreshed every bootstrap from the
+    # packaged copy and must not be tracked in target repos.
+    assert ".github/agents/aidor-coder.md" in lines
+    assert ".github/agents/aidor-reviewer.md" in lines
 
 
 def test_bootstrap_appends_hooks_ignore_when_only_aidor_is_present(run_config):
@@ -99,6 +103,8 @@ def test_bootstrap_appends_hooks_ignore_when_only_aidor_is_present(run_config):
     lines = {ln.strip() for ln in content.splitlines()}
     assert ".aidor/" in lines
     assert ".github/hooks/aidor.json" in lines
+    assert ".github/agents/aidor-coder.md" in lines
+    assert ".github/agents/aidor-reviewer.md" in lines
     assert "my_local_notes.txt" in lines  # pre-existing line preserved
     assert "# existing" in content  # comments preserved
 
@@ -112,6 +118,8 @@ def test_bootstrap_is_idempotent_for_gitignore(run_config):
     assert first == second
     assert first.count(".aidor/") == 1
     assert first.count(".github/hooks/aidor.json") == 1
+    assert first.count(".github/agents/aidor-coder.md") == 1
+    assert first.count(".github/agents/aidor-reviewer.md") == 1
 
 
 def test_bootstrap_refreshes_stale_agent_files(run_config):
@@ -146,27 +154,6 @@ def test_bootstrap_refreshes_stale_agent_files(run_config):
     assert coder_path.read_text(encoding="utf-8") == expected_coder
     assert any("refreshed" in a and "aidor-reviewer.md" in a for a in actions)
     assert any("refreshed" in a and "aidor-coder.md" in a for a in actions)
-
-
-def test_checked_in_agent_files_match_packaged_templates():
-    """Regression for review-0011: the live `.github/agents/*.md` files in
-    THIS repo must match the packaged templates byte-for-byte. Without this
-    check the source-of-truth template can be tightened (as it was in round
-    10) while the live file the orchestrator actually loads keeps shipping
-    the old contract."""
-    from importlib import resources
-
-    repo_root = Path(__file__).resolve().parents[1]
-    pkg_ref = resources.files("aidor.agent_templates")
-
-    for name in ("aidor-coder.md", "aidor-reviewer.md"):
-        live = (repo_root / ".github" / "agents" / name).read_text(encoding="utf-8")
-        packaged = (pkg_ref / name).read_text(encoding="utf-8")
-        assert live == packaged, (
-            f".github/agents/{name} has drifted from "
-            f"src/aidor/agent_templates/{name}; re-run `aidor bootstrap` "
-            "or copy the packaged template over the checked-in file."
-        )
 
 
 def test_bootstrap_seeds_documented_ruff_exceptions(run_config):

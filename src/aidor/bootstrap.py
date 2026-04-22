@@ -166,12 +166,26 @@ def bootstrap(config: RunConfig) -> list[str]:
     actions.append(f"wrote {config.config_snapshot_path.relative_to(repo).as_posix()}")
 
     # ---- .gitignore entries -----------------------------------------------
-    # Both `.aidor/` (run artefacts) and `.github/hooks/aidor.json` (machine-
-    # specific: bakes the absolute path of this Python interpreter) must be
-    # ignored. Bootstrap manages both so a fresh target repo cannot
-    # accidentally commit either one.
+    # Aidor-managed scaffolding that must never be committed to the target
+    # repo:
+    #   - `.aidor/`                         run artefacts
+    #   - `.github/hooks/aidor.json`        machine-specific: bakes the
+    #                                       absolute path of this Python
+    #                                       interpreter
+    #   - `.github/agents/aidor-coder.md`   refreshed from packaged template
+    #     `.github/agents/aidor-reviewer.md`  on every bootstrap; checking
+    #                                         them in causes drift between
+    #                                         operator branches and pollutes
+    #                                         PRs
+    # Bootstrap manages all of these so a fresh target repo cannot
+    # accidentally commit any of them.
     gi = repo / ".gitignore"
-    needed_entries = (".aidor/", ".github/hooks/aidor.json")
+    needed_entries = (
+        ".aidor/",
+        ".github/hooks/aidor.json",
+        ".github/agents/aidor-coder.md",
+        ".github/agents/aidor-reviewer.md",
+    )
     gi_actions = _ensure_gitignore_entries(gi, needed_entries)
     actions.extend(gi_actions)
 
