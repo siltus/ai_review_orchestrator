@@ -427,25 +427,56 @@ def test_iter_shell_clauses_handles_python_dash_m_pip():
 
 def test_pip_install_allowed_denies_user_flag():
     ok, reason = hr._pip_install_allowed(
-        ["install", "--user", "foo"], allow_local_install=True, python_lockfile=True
+        ["install", "--user", "foo"], allow_local_install=True, python_install_anchor=True
     )
     assert not ok
     assert "--user" in reason
 
 
-def test_pip_install_allowed_requires_lockfile():
+def test_pip_install_allowed_requires_anchor_or_dev_tool():
     ok, reason = hr._pip_install_allowed(
-        ["install", "-e", "."], allow_local_install=True, python_lockfile=False
+        ["install", "requests"], allow_local_install=True, python_install_anchor=False
     )
     assert not ok
-    assert "lockfile" in reason
+    assert "anchor" in reason
 
 
-def test_pip_install_allowed_happy_path():
+def test_pip_install_allowed_happy_path_with_anchor():
     ok, reason = hr._pip_install_allowed(
-        ["install", "-e", "."], allow_local_install=True, python_lockfile=True
+        ["install", "-e", "."], allow_local_install=True, python_install_anchor=True
     )
     assert ok and reason == ""
+
+
+def test_pip_install_allowed_dev_tool_without_anchor():
+    """Curated dev/test tooling (pytest, ruff, pre-commit, ...) is
+    allowed even without an anchor file so the coder can bootstrap the
+    local quality gate in projects that haven't generated a lockfile."""
+    for pkg in ("pytest", "ruff", "pre-commit", "pip-audit", "pyright", "pytest==8.3.3"):
+        ok, reason = hr._pip_install_allowed(
+            ["install", pkg], allow_local_install=True, python_install_anchor=False
+        )
+        assert ok, f"{pkg!r} should be allowed: {reason}"
+
+
+def test_pip_install_allowed_mixed_dev_and_runtime_denied():
+    """If even one positional target is NOT on the dev-tool allowlist,
+    the whole command must be denied — otherwise smuggling a runtime
+    dep alongside pytest would bypass the policy."""
+    ok, _ = hr._pip_install_allowed(
+        ["install", "pytest", "requests"],
+        allow_local_install=True,
+        python_install_anchor=False,
+    )
+    assert not ok
+
+
+def test_pip_install_allowed_requires_gate():
+    ok, reason = hr._pip_install_allowed(
+        ["install", "pytest"], allow_local_install=False, python_install_anchor=False
+    )
+    assert not ok
+    assert "AIDOR_ALLOW_LOCAL_INSTALL" in reason
 
 
 def test_extract_question_from_message_field():

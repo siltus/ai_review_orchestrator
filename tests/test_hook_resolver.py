@@ -612,7 +612,12 @@ def test_deny_start_process(tmp_path: Path):
 def test_deny_pip_install_without_lockfile_or_gate(tmp_path: Path):
     decision = _deny_decision(tmp_path, "pip install requests")
     assert decision is not None
-    assert "lockfile" in decision["permissionDecisionReason"]
+    # Reason now mentions "anchor" or the AIDOR_ALLOW_LOCAL_INSTALL env
+    # gate — either is acceptable here.
+    assert (
+        "anchor" in decision["permissionDecisionReason"]
+        or "AIDOR_ALLOW_LOCAL_INSTALL" in decision["permissionDecisionReason"]
+    )
 
 
 def test_deny_pip_install_user_always(tmp_path: Path):
@@ -662,6 +667,72 @@ def test_deny_pip_install_target(tmp_path: Path):
     )
     assert decision is not None
     assert "--target" in decision["permissionDecisionReason"]
+
+
+def test_allow_pip_install_dash_r_requirements_dev_with_anchor(tmp_path: Path):
+    """A pinned ``requirements-dev.txt`` must count as a project anchor
+    so the coder can run ``pip install -r requirements-dev.txt`` to
+    bootstrap the local quality gate. (regression: ecoflow_keep_alive
+    real-repo run round 5 \u2014 coder couldn't install pre-commit/pytest)."""
+    (tmp_path / "requirements-dev.txt").write_text("pytest==8.3.3\n", encoding="utf-8")
+    decision = _deny_decision(
+        tmp_path,
+        "pip install -r requirements-dev.txt",
+        env={"AIDOR_REPO": str(tmp_path), "AIDOR_ALLOW_LOCAL_INSTALL": "1"},
+    )
+    assert decision is None
+
+
+def test_allow_pip_install_dev_tool_without_anchor(tmp_path: Path):
+    """Curated dev-tool names (pytest, ruff, pre-commit, ...) must be
+    installable even when no anchor file exists, so the coder can
+    bootstrap tooling on a totally fresh project."""
+    for cmd in (
+        "pip install pytest",
+        "pip install ruff pre-commit pip-audit",
+        "python -m pip install pytest==8.3.3",
+        "pip install pytest pytest-cov pyright",
+    ):
+        decision = _deny_decision(
+            tmp_path,
+            cmd,
+            env={"AIDOR_REPO": str(tmp_path), "AIDOR_ALLOW_LOCAL_INSTALL": "1"},
+        )
+        assert decision is None, f"{cmd!r} should be allowed"
+
+
+def test_deny_pip_install_runtime_dep_without_anchor(tmp_path: Path):
+    """A non-dev package without an anchor must still be denied \u2014 we
+    don't want the agent silently adding runtime dependencies."""
+    decision = _deny_decision(
+        tmp_path,
+        "pip install requests",
+        env={"AIDOR_REPO": str(tmp_path), "AIDOR_ALLOW_LOCAL_INSTALL": "1"},
+    )
+    assert decision is not None
+
+
+def test_deny_pip_install_dev_tool_mixed_with_runtime(tmp_path: Path):
+    """Mixing a dev tool with a runtime dep must be denied \u2014 otherwise
+    smuggling ``requests`` alongside ``pytest`` would bypass the policy."""
+    decision = _deny_decision(
+        tmp_path,
+        "pip install pytest requests",
+        env={"AIDOR_REPO": str(tmp_path), "AIDOR_ALLOW_LOCAL_INSTALL": "1"},
+    )
+    assert decision is not None
+
+
+def test_allow_pip_install_with_pyproject_anchor(tmp_path: Path):
+    """A bare ``pyproject.toml`` (even without a transitive lockfile)
+    is enough of an anchor for any ``pip install`` since dependencies\n    are declared there."""
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    decision = _deny_decision(
+        tmp_path,
+        "pip install -e .",
+        env={"AIDOR_REPO": str(tmp_path), "AIDOR_ALLOW_LOCAL_INSTALL": "1"},
+    )
+    assert decision is None
 
 
 # ---- statement-separator handling (regression: cd <repo>; <cmd> chain) ---

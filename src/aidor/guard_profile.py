@@ -55,6 +55,58 @@ _LOCAL_INSTALL_MARKERS: tuple[tuple[str, ...], ...] = (
 
 _PYTHON_LOCKFILE_MARKERS: tuple[str, ...] = ("poetry.lock", "uv.lock", "Pipfile.lock")
 
+# Files that anchor a pip install to the project's declared dependency
+# set. A true lockfile (above) is the strongest signal, but a pinned
+# `requirements*.txt` or a `pyproject.toml` is still a project-scoped
+# install target — far safer than an arbitrary `pip install <pkg>`. The
+# coder needs this to bootstrap test-tooling (pytest, ruff, pre-commit)
+# in projects that don't ship a poetry/uv/pipenv lockfile.
+_PYTHON_INSTALL_ANCHOR_MARKERS: tuple[str, ...] = (
+    *_PYTHON_LOCKFILE_MARKERS,
+    "pyproject.toml",
+    "setup.cfg",
+    "setup.py",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "requirements-test.txt",
+    "requirements_dev.txt",
+    "requirements_test.txt",
+)
+
+# Curated set of test/dev tooling that the coder is permitted to install
+# by name even when no anchor file is present. These tools are never
+# load-bearing for runtime behaviour; they only support the local quality
+# gate (lint, format, type-check, test, coverage, supply-chain audit).
+# Keeping this list short and conservative bounds blast radius if a
+# malicious dependency name is somehow proposed by the agent.
+_DEV_TOOL_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "pytest",
+        "pytest-cov",
+        "pytest-asyncio",
+        "pytest-timeout",
+        "pytest-mock",
+        "pytest-xdist",
+        "coverage",
+        "ruff",
+        "black",
+        "isort",
+        "mypy",
+        "pyright",
+        "pre-commit",
+        "pre_commit",
+        "pip-audit",
+        "pip_audit",
+        "build",
+        "tox",
+        "nox",
+        "hatch",
+        "setuptools",
+        "wheel",
+        "pip",
+    }
+)
+
 
 def detect_local_install_available(repo: Path) -> bool:
     """True iff the repo ships at least one lockfile for a supported
@@ -70,6 +122,27 @@ def detect_python_lockfile(repo: Path) -> bool:
     distinguish ``pip install -e`` (permitted when a lockfile is present)
     from unscoped ``pip install <pkg>`` (always denied)."""
     return any((repo / marker).exists() for marker in _PYTHON_LOCKFILE_MARKERS)
+
+
+def detect_python_install_anchor(repo: Path) -> bool:
+    """True iff the repo ships any project-scoped dependency declaration:
+    a true lockfile, a ``pyproject.toml`` / ``setup.{cfg,py}``, or a
+    pinned ``requirements*.txt``. Wider than ``detect_python_lockfile``
+    because it accepts the common bootstrap state where the project
+    declares its dependencies but hasn't generated a transitive lockfile."""
+    return any((repo / marker).exists() for marker in _PYTHON_INSTALL_ANCHOR_MARKERS)
+
+
+def is_dev_tool(name: str) -> bool:
+    """True iff ``name`` (a pip install target) is on the curated
+    test/dev tooling allowlist. Strips a trailing ``[extra]`` and any
+    version specifier (``pkg==1.2.3`` -> ``pkg``)."""
+    base = name.split("[", 1)[0]
+    for sep in ("==", ">=", "<=", "~=", "!=", ">", "<", "==="):
+        if sep in base:
+            base = base.split(sep, 1)[0]
+            break
+    return base.strip().lower() in _DEV_TOOL_ALLOWLIST
 
 
 def build_flags(

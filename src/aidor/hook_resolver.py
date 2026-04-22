@@ -746,25 +746,57 @@ def _flag_stem(token: str) -> str:
 
 
 def _pip_install_allowed(
-    args: list[str], *, allow_local_install: bool, python_lockfile: bool
+    args: list[str],
+    *,
+    allow_local_install: bool,
+    python_install_anchor: bool,
 ) -> tuple[bool, str]:
     """Decide whether a ``pip install ...`` invocation is permitted.
 
     Returns ``(allowed, reason)``. ``reason`` is empty when allowed,
     human-readable when denied.
+
+    Policy (in order):
+      * ``--user`` / ``--target`` / ``--prefix`` / ``--root`` always
+        deny — they write outside the project tree.
+      * If ``allow_local_install`` is False, deny.
+      * If a project-scoped dependency anchor exists (lockfile,
+        pyproject.toml, setup.{cfg,py}, requirements*.txt), allow.
+      * Otherwise, allow only if every positional install target is on
+        the curated dev/test tooling allowlist (pytest, ruff,
+        pre-commit, pip-audit, pyright, etc.). This lets the coder
+        bootstrap the local quality gate in projects that haven't
+        generated a lockfile yet, without permitting arbitrary runtime
+        dependencies to be added behind the maintainer's back.
     """
+    from aidor.guard_profile import is_dev_tool
+
     # Any of the --user / --target / --prefix / --root forms writes
     # outside the project tree and is always denied.
     for tok in args:
         stem = _flag_stem(tok).lower()
         if stem in _PIP_INSTALL_UNSAFE_FLAGS:
             return (False, f"pip install {stem} writes outside the repo")
-    if allow_local_install and python_lockfile:
+    if not allow_local_install:
+        return (
+            False,
+            "pip install requires AIDOR_ALLOW_LOCAL_INSTALL=1",
+        )
+    if python_install_anchor:
+        return (True, "")
+    # No anchor file: only allow if every positional target is on the
+    # dev-tool allowlist. ``-r requirements*.txt`` etc. would have
+    # tripped the anchor check above.
+    positionals = [t for t in args[1:] if not t.startswith("-")]  # skip leading 'install'
+    if positionals and all(is_dev_tool(p) for p in positionals):
         return (True, "")
     return (
         False,
-        "pip install requires a Python lockfile (poetry.lock / uv.lock / Pipfile.lock) "
-        "and allow_local_install=True",
+        "pip install requires a project dependency anchor "
+        "(poetry.lock / uv.lock / Pipfile.lock / pyproject.toml / "
+        "setup.{cfg,py} / requirements*.txt) or every target on the "
+        "curated dev-tool allowlist (pytest, ruff, pre-commit, "
+        "pip-audit, pyright, ...)",
     )
 
 
@@ -833,12 +865,12 @@ def _check_shell_allowlist(payload: dict[str, Any], args: dict[str, Any]) -> dic
     if not isinstance(cmd, str) or not cmd:
         return None
 
-    from aidor.guard_profile import detect_python_lockfile
+    from aidor.guard_profile import detect_python_install_anchor
 
     repo = _repo_root(payload)
     rules = _load_shell_allowlist(repo)
     allow_local_install = os.environ.get("AIDOR_ALLOW_LOCAL_INSTALL", "0") == "1"
-    python_lockfile = allow_local_install and detect_python_lockfile(repo)
+    python_install_anchor = allow_local_install and detect_python_install_anchor(repo)
 
     for exe, rest in _iter_shell_clauses(cmd):
         if not exe:
@@ -852,7 +884,7 @@ def _check_shell_allowlist(payload: dict[str, Any], args: dict[str, Any]) -> dic
                 allowed, reason = _pip_install_allowed(
                     rest,
                     allow_local_install=allow_local_install,
-                    python_lockfile=python_lockfile,
+                    python_install_anchor=python_install_anchor,
                 )
                 if allowed:
                     continue
