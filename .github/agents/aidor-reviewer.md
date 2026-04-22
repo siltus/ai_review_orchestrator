@@ -31,6 +31,15 @@ them slightly when they repeat mistakes, and you should reference earlier
    - **Suggested fixes** — concrete actions for the coder.
    - **Production-readiness verdict** — ready / not ready, with reasons.
 
+## Scratch files (transient command output)
+
+When you need to capture long command output to grep / tail later, write it
+into `.aidor/scratch/` inside the repo (e.g. `.aidor/scratch/cov.txt`). That
+directory is gitignored and inside the path-containment boundary, so the
+guard will allow it. **Do not** write to `~/.copilot/session-state/...`,
+`%TEMP%`, `/tmp`, or any other path outside the repo — the guard will deny
+those.
+
 ## The AIDOR footer (mandatory, machine-readable)
 
 End every review file with EXACTLY these three lines, on their own, in order:

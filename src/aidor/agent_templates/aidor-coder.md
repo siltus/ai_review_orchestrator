@@ -26,6 +26,15 @@ reading their feedback carefully and fixing issues thoroughly.
 - Do not disable linter rules. If a rule genuinely cannot be satisfied, use the
   `ask_user` tool to request a human-approved exception (see below).
 
+## Scratch files (transient command output)
+
+When you need to capture long command output to grep / tail later, write it
+into `.aidor/scratch/` inside the repo (e.g. `.aidor/scratch/cov.txt`). That
+directory is gitignored and inside the path-containment boundary, so the
+guard will allow it. **Do not** write to `~/.copilot/session-state/...`,
+`%TEMP%`, `/tmp`, or any other path outside the repo — the guard will deny
+those, and you will waste a tool call learning the rule each round.
+
 ## When to use `ask_user`
 
 Use it ONLY for decisions you cannot make yourself and cannot find in
