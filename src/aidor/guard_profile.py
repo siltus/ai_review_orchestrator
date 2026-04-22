@@ -79,32 +79,241 @@ _PYTHON_INSTALL_ANCHOR_MARKERS: tuple[str, ...] = (
 # gate (lint, format, type-check, test, coverage, supply-chain audit).
 # Keeping this list short and conservative bounds blast radius if a
 # malicious dependency name is somehow proposed by the agent.
-_DEV_TOOL_ALLOWLIST: frozenset[str] = frozenset(
+#
+# Organised per ecosystem for readability. The current consumer
+# (``_pip_install_allowed``) only matches against the *Python* slice
+# at runtime — pip will never see ``vitest`` or ``junit``. The other
+# ecosystem entries are pre-loaded here so that future ``npm install``,
+# ``dotnet tool install``, and ``cargo install`` gates can consume the
+# same vocabulary without a second policy file.
+_PYTHON_DEV_TOOLS: frozenset[str] = frozenset(
     {
+        # test runners + plugins
         "pytest",
         "pytest-cov",
         "pytest-asyncio",
         "pytest-timeout",
         "pytest-mock",
         "pytest-xdist",
+        "pytest-randomly",
+        "pytest-benchmark",
+        "hypothesis",
         "coverage",
+        # lint / format / type
         "ruff",
         "black",
         "isort",
+        "flake8",
+        "pylint",
         "mypy",
         "pyright",
-        "pre-commit",
-        "pre_commit",
+        "pyre-check",
+        # security / supply-chain
+        "bandit",
+        "safety",
         "pip-audit",
         "pip_audit",
+        # build / packaging / release
         "build",
-        "tox",
-        "nox",
-        "hatch",
         "setuptools",
         "wheel",
+        "twine",
+        "hatch",
+        "hatchling",
+        "flit",
+        "flit_core",
+        "poetry-core",
+        # task runners / pre-commit
+        "pre-commit",
+        "pre_commit",
+        "tox",
+        "nox",
+        "invoke",
+        # misc
         "pip",
+        "uv",
+        "cookiecutter",
+        "commitizen",
+        "bumpversion",
+        "bump2version",
     }
+)
+
+_NODE_DEV_TOOLS: frozenset[str] = frozenset(
+    {
+        # test runners
+        "jest",
+        "vitest",
+        "mocha",
+        "chai",
+        "ava",
+        "tap",
+        "tape",
+        "cypress",
+        "playwright",
+        "@playwright/test",
+        "@vitest/coverage-v8",
+        "nyc",
+        "c8",
+        # lint / format / type
+        "eslint",
+        "prettier",
+        "typescript",
+        "ts-node",
+        "tsx",
+        "@typescript-eslint/parser",
+        "@typescript-eslint/eslint-plugin",
+        "stylelint",
+        # build
+        "vite",
+        "webpack",
+        "rollup",
+        "esbuild",
+        "tsc",
+        "tsup",
+        "parcel",
+        # task runners / hooks
+        "husky",
+        "lint-staged",
+        "concurrently",
+        "npm-run-all",
+        # security
+        "audit-ci",
+        "better-npm-audit",
+    }
+)
+
+_DOTNET_DEV_TOOLS: frozenset[str] = frozenset(
+    {
+        # test runners
+        "xunit",
+        "xunit.runner.console",
+        "xunit.runner.visualstudio",
+        "nunit",
+        "nunit3.console",
+        "mstest",
+        "microsoft.net.test.sdk",
+        "fluentassertions",
+        "moq",
+        "nsubstitute",
+        # coverage
+        "coverlet.collector",
+        "coverlet.msbuild",
+        "reportgenerator",
+        # lint / format / analysers
+        "dotnet-format",
+        "csharpier",
+        "stylecop.analyzers",
+        "sonaranalyzer.csharp",
+        "roslynator.analyzers",
+        # build / dx
+        "dotnet-ef",
+        "dotnet-outdated-tool",
+        "dotnet-reportgenerator-globaltool",
+    }
+)
+
+_JVM_DEV_TOOLS: frozenset[str] = frozenset(
+    {
+        # test runners + assertion libs (Maven/Gradle artefact names)
+        "junit",
+        "junit-jupiter",
+        "junit-jupiter-api",
+        "junit-jupiter-engine",
+        "junit-vintage-engine",
+        "testng",
+        "spock-core",
+        "mockito-core",
+        "mockito-junit-jupiter",
+        "assertj-core",
+        "hamcrest",
+        "truth",
+        # coverage
+        "jacoco",
+        "cobertura",
+        # lint / format / static analysis
+        "checkstyle",
+        "spotbugs",
+        "pmd",
+        "errorprone",
+        "spotless",
+        "google-java-format",
+        "ktlint",
+        "detekt",
+        # build helpers
+        "gradle-wrapper",
+        "maven-wrapper",
+    }
+)
+
+_ANDROID_DEV_TOOLS: frozenset[str] = frozenset(
+    {
+        # AndroidX test
+        "androidx.test:runner",
+        "androidx.test:rules",
+        "androidx.test.ext:junit",
+        "androidx.test.espresso:espresso-core",
+        "androidx.test.uiautomator:uiautomator",
+        "androidx.benchmark:benchmark-junit4",
+        "robolectric",
+        # lint / format
+        "android-lint",
+        "ktlint",
+        "detekt",
+    }
+)
+
+_RUST_DEV_TOOLS: frozenset[str] = frozenset(
+    {
+        # cargo install <name> targets
+        "cargo-audit",
+        "cargo-deny",
+        "cargo-tarpaulin",
+        "cargo-llvm-cov",
+        "cargo-nextest",
+        "cargo-watch",
+        "cargo-edit",
+        "cargo-outdated",
+        "cargo-msrv",
+        "cargo-machete",
+        "cargo-bloat",
+        # rustup components are gated separately, but the names are
+        # commonly typed as `rustup component add <name>`
+        "rustfmt",
+        "clippy",
+        "rust-analyzer",
+        # criterion is a dev-dependency, not a binary
+        "criterion",
+    }
+)
+
+_GO_DEV_TOOLS: frozenset[str] = frozenset(
+    {
+        # `go install <path>` targets
+        "github.com/golangci/golangci-lint/cmd/golangci-lint",
+        "honnef.co/go/tools/cmd/staticcheck",
+        "golang.org/x/tools/cmd/goimports",
+        "mvdan.cc/gofumpt",
+        "github.com/securego/gosec/v2/cmd/gosec",
+        "github.com/sonatype-nexus-community/nancy",
+        "github.com/jstemmer/go-junit-report/v2",
+        "gotest.tools/gotestsum",
+    }
+)
+
+# Union exposed to the existing pip-only ``is_dev_tool`` consumer.
+# When an ``npm install`` / ``dotnet tool install`` / ``cargo install``
+# gate lands, it should consume the per-ecosystem set above directly
+# rather than this union, to keep cross-ecosystem name collisions from
+# silently widening the policy.
+_DEV_TOOL_ALLOWLIST: frozenset[str] = (
+    _PYTHON_DEV_TOOLS
+    | _NODE_DEV_TOOLS
+    | _DOTNET_DEV_TOOLS
+    | _JVM_DEV_TOOLS
+    | _ANDROID_DEV_TOOLS
+    | _RUST_DEV_TOOLS
+    | _GO_DEV_TOOLS
 )
 
 
