@@ -67,17 +67,24 @@ wrong versions and lets "missing" tools (e.g. `pip-audit`, `pre-commit`,
 
 Bootstrap order on every round, BEFORE running any gate command:
 
-1. **Locate or create `.venv`.**
-   - If `.venv\Scripts\python.exe` (Windows) or `.venv/bin/python`
-     (POSIX) exists, use it.
-   - Else create one: `python -m venv .venv` (the guard allows this —
-     `python -m venv` is on the allowlist and writes inside the repo).
+1. **Locate or create the venv.** A repo's virtualenv usually lives at
+   `.venv/` or `venv/` at the repo root, but the operator may have
+   used another name (`env/`, `.virtualenv/`, ...). Probe in this
+   order and use the first one that has a working interpreter:
+   `.venv\Scripts\python.exe`, `venv\Scripts\python.exe`,
+   `env\Scripts\python.exe` (Windows) /
+   `.venv/bin/python`, `venv/bin/python`, `env/bin/python` (POSIX).
+   - If none exist, create one: `python -m venv .venv` (the guard
+     allows this — `python -m venv` is on the allowlist and writes
+     inside the repo). Default to `.venv` for new venvs.
    - Do NOT use `Activate.ps1` / `source activate` — they need
      compound shell forms (`if { ... }`) that the clause splitter
      rejects, and you cannot rely on env vars persisting across tool
      calls anyway. Instead, **invoke the venv interpreter directly by
-     full path** every time: `.\.venv\Scripts\python.exe -m ...` on
-     Windows, `./.venv/bin/python -m ...` on POSIX.
+     full path** every time: `.\<venv>\Scripts\python.exe -m ...` on
+     Windows, `./<venv>/bin/python -m ...` on POSIX, where `<venv>`
+     is whichever folder you found / created above. The examples
+     below use `.venv` for brevity.
 
 2. **Install the dev/gate dependencies into `.venv`.** Find the dev
    anchor and install ALL of it — not just the runtime
