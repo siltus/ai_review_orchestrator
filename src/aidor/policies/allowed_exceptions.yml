@@ -9,32 +9,36 @@
 #
 # Edit this file freely. aidor will never overwrite it after bootstrap.
 #
-# The entries below are this repository's own approved Ruff exceptions; they
-# must stay in sync with `pyproject.toml` (`[tool.ruff.lint] ignore = [...]`
-# and `[tool.ruff.lint.per-file-ignores]`). Bootstrap seeds a fresh
-# `.aidor/allowed_exceptions.yml` from this versioned template, so removing
-# entries here will silently change hook-resolver behavior on a fresh clone.
+# The defaults below are intentionally conservative and apply to any Python
+# repo. Trim, extend, or replace them per project — anything not listed here
+# (or explicitly rejected by the agent) will escalate to a human via
+# `ask_user`. Common additions:
+#   - ESLint:   `no-unused-vars` in test/spec files
+#   - mypy:     `no-untyped-def` in legacy modules during incremental typing
+#   - bandit:   `B101` (assert in non-test code) on a narrow path
 
 exceptions:
+  # ---- Generally-safe Ruff defaults for any Python project -------------
   - rule: E501
     linter: ruff
     path_glob: "**/*"
     reason: >-
       Long URL literals, long error strings, and long test fixtures are more
       readable on a single line than wrapped. The formatter (`ruff format`)
-      already enforces a 100-char soft limit for normal code.
+      already enforces the configured line length for normal code.
   - rule: B008
     linter: ruff
-    path_glob: "src/aidor/cli.py"
+    path_glob: "**/*"
     reason: >-
-      Typer's public API requires `typer.Option(...)` / `typer.Argument(...)`
-      as default values for CLI parameters. Removing them would break the CLI.
+      Common framework APIs (Typer `Option(...)`, Click `Argument(...)`,
+      FastAPI `Depends(...)`) require function-call defaults; rewriting them
+      breaks the framework contract.
   - rule: SIM102
     linter: ruff
     path_glob: "**/*"
     reason: >-
       Nested `if` statements are sometimes clearer than a combined boolean
-      expression (e.g. when each level has a distinct responsibility).
+      expression when each level expresses a distinct responsibility.
   - rule: SIM105
     linter: ruff
     path_glob: "**/*"
@@ -46,10 +50,24 @@ exceptions:
     path_glob: "**/*"
     reason: >-
       Combined `with` statements sometimes harm readability when the inner
-      context manager depends on side-effects of the outer one.
+      context manager depends on side effects of the outer one.
+
+  # ---- Test-only defaults ---------------------------------------------
   - rule: B011
     linter: ruff
     path_glob: "tests/**/*"
     reason: >-
-      Bare `assert` is the idiomatic way to express test assertions in
-      pytest; the `-O` Python flag is never used in the CI test run.
+      Bare `assert` is the idiomatic way to express pytest assertions; the
+      `-O` Python flag is never used for the test run.
+  - rule: S101
+    linter: ruff
+    path_glob: "tests/**/*"
+    reason: >-
+      `assert` is the standard pytest assertion; the bandit/Ruff S101
+      "assert detected" warning does not apply to test code.
+  - rule: ARG001
+    linter: ruff
+    path_glob: "tests/**/*"
+    reason: >-
+      Unused function arguments are common in pytest fixtures (e.g. fixture
+      injected purely for its setup/teardown side effects).
