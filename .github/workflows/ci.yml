@@ -21,6 +21,8 @@ jobs:
         run: python -m ruff check src tests
       - name: ruff (format check)
         run: python -m ruff format --check src tests
+      - name: pyright (static type check)
+        run: python -m pyright
       - name: pip-audit (supply-chain)
         run: python -m pip_audit --skip-editable
       - name: pytest

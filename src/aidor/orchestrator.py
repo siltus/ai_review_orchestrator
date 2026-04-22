@@ -275,6 +275,11 @@ class Orchestrator:
                     "artifact_path; treating footer as unparseable"
                 )
                 footer = None
+                # Bind review_path to a sentinel so static analysis can
+                # see it is always defined when the fix phase below
+                # runs. The `if footer is None: return 2` guard below
+                # ensures we never actually use this sentinel value.
+                review_path = Path()
             else:
                 review_path = Path(review_path_str)
                 try:
@@ -340,8 +345,14 @@ class Orchestrator:
                     rnd.footer = gate_footer.to_dict()
                     # Route the coder to the GATE'S review (the original
                     # one was clean; only the gate found new issues).
+                    # gate_path is non-None here: the only branch above
+                    # that produces a truthy gate_footer also wrote to
+                    # gate_path (the `gate_path is None or not exists`
+                    # branch sets gate_footer_error and leaves
+                    # gate_footer as None).
+                    assert gate_path is not None
                     footer = gate_footer
-                    review_path = gate_path  # type: ignore[assignment]
+                    review_path = gate_path
                     self._save_state()
                     self._note(f"round {round_index}: readiness gate found issues; continuing")
                 else:

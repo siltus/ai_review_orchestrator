@@ -29,9 +29,24 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 POLL_INTERVAL_S = 0.25
+
+
+def _as_str_dict(value: Any) -> dict[str, Any]:
+    """Narrow an arbitrary value (typically from ``json.loads`` or
+    ``yaml.safe_load``) to a typed ``dict[str, Any]``.
+
+    Returns an empty dict if ``value`` is not a mapping. This lets the
+    rest of the module keep its precise typing without sprinkling
+    ``cast()`` calls at every untrusted-input boundary."""
+    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    """Narrow an arbitrary value to a typed ``list[Any]``."""
+    return cast(list[Any], value) if isinstance(value, list) else []
 
 
 # ---- Entry point ----------------------------------------------------------
@@ -76,7 +91,7 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
     tool = _get_field(payload, "toolName", "tool_name", default="")
     raw_args = _get_field(payload, "toolArgs", "tool_input", default={})
     if isinstance(raw_args, dict):
-        args: dict[str, Any] = raw_args
+        args: dict[str, Any] = cast(dict[str, Any], raw_args)
     elif isinstance(raw_args, str):
         # Copilot sometimes serialises the tool-arg object as a JSON
         # string (observed for `run_in_terminal` in CLI v1.0.35-2). Try
@@ -88,7 +103,7 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
             try:
                 candidate = json.loads(raw_args)
                 if isinstance(candidate, dict):
-                    parsed = candidate
+                    parsed = cast(dict[str, Any], candidate)
             except (json.JSONDecodeError, ValueError):
                 parsed = None
         args = parsed if parsed is not None else {"command": raw_args}
@@ -219,8 +234,11 @@ def _handle_ask_user(payload: dict[str, Any], args: dict[str, Any]) -> dict[str,
                 or "Question cancelled by human; proceed with a safe default."
             )
 
-    # Fallback safety net — should never be reached, but keeps the agent moving.
-    if answer is None:
+    # Fallback safety net: if we somehow ended up with an empty answer
+    # (e.g. _ask_human returned "" for a cancelled-with-no-message case),
+    # still hand the agent something actionable rather than an empty
+    # decision string.
+    if not answer:
         answer = "No deterministic answer available; please choose a different approach."
         source = "fallback"
 
@@ -296,11 +314,12 @@ def _lookup_lint_exception(repo: Path, question: str) -> str | None:
         cfg = _load_yaml_simple(path)
     except Exception:  # pragma: no cover - defensive
         return None
-    exceptions = cfg.get("exceptions") or []
+    exceptions = _as_list(cfg.get("exceptions"))
     q = question or ""
     q_lower = q.lower()
     target_paths = _extract_path_tokens(q)
-    for ex in exceptions:
+    for raw_ex in exceptions:
+        ex = _as_str_dict(raw_ex)
         rule = str(ex.get("rule", "") or "")
         if not rule:
             continue
@@ -317,7 +336,7 @@ def _lookup_lint_exception(repo: Path, question: str) -> str | None:
                 continue
             if not any(_glob_match(p, path_glob) for p in target_paths):
                 continue
-        reason = ex.get("reason", "pre-approved")
+        reason = str(ex.get("reason", "pre-approved") or "pre-approved")
         return f"Yes, approved. Reason: {reason}"
     return None
 
@@ -408,7 +427,7 @@ def _ask_human(repo: Path, question: str, class_name: str) -> str:
                 try:
                     data = json.loads(raw)
                     if isinstance(data, dict) and "answer" in data:
-                        return str(data["answer"])
+                        return str(cast(dict[str, Any], data)["answer"])
                 except json.JSONDecodeError:
                     pass
                 return raw
@@ -451,8 +470,8 @@ def _load_tool_allowlist(repo: Path) -> set[str]:
         )
         import yaml
 
-        data = yaml.safe_load(text) or {}
-        for n in data.get("tools") or []:
+        data = _as_str_dict(yaml.safe_load(text))
+        for n in _as_list(data.get("tools")):
             if isinstance(n, str) and n.strip():
                 names.add(n.strip())
     except Exception:  # pragma: no cover - defensive
@@ -462,8 +481,8 @@ def _load_tool_allowlist(repo: Path) -> set[str]:
         try:
             import yaml
 
-            data = yaml.safe_load(user.read_text(encoding="utf-8")) or {}
-            for n in data.get("tools") or []:
+            data = _as_str_dict(yaml.safe_load(user.read_text(encoding="utf-8")))
+            for n in _as_list(data.get("tools")):
                 if isinstance(n, str) and n.strip():
                     names.add(n.strip())
         except Exception:  # pragma: no cover - defensive
@@ -767,8 +786,8 @@ def _load_shell_allowlist(repo: Path) -> list[tuple[str, re.Pattern[str], dict[s
         )
         import yaml
 
-        data = yaml.safe_load(text) or {}
-        raw_rules.extend(data.get("rules") or [])
+        data = _as_str_dict(yaml.safe_load(text))
+        raw_rules.extend(_as_str_dict(r) for r in _as_list(data.get("rules")))
     except Exception:  # pragma: no cover - defensive
         pass
     user = repo / ".aidor" / "shell_allowlist.yml"
@@ -776,17 +795,17 @@ def _load_shell_allowlist(repo: Path) -> list[tuple[str, re.Pattern[str], dict[s
         try:
             import yaml
 
-            data = yaml.safe_load(user.read_text(encoding="utf-8")) or {}
-            raw_rules.extend(data.get("rules") or [])
+            data = _as_str_dict(yaml.safe_load(user.read_text(encoding="utf-8")))
+            raw_rules.extend(_as_str_dict(r) for r in _as_list(data.get("rules")))
         except Exception:  # pragma: no cover - defensive
             pass
     compiled: list[tuple[str, re.Pattern[str], dict[str, Any]]] = []
     for rule in raw_rules:
-        exe = (rule.get("exe") or "").strip().lower()
+        exe = str(rule.get("exe") or "").strip().lower()
         if not exe:
             continue
         try:
-            pat = re.compile(rule.get("args_regex", ".*"))
+            pat = re.compile(str(rule.get("args_regex", ".*")))
         except re.error:
             continue
         compiled.append((exe, pat, rule))
@@ -1106,28 +1125,33 @@ def _extract_question(args: dict[str, Any]) -> str:
         return json.dumps(unwrapped, ensure_ascii=False)
 
     choices = unwrapped.get("choices")
-    if isinstance(choices, list) and choices:
-        rendered = "\n".join(f"  {i + 1}. {c}" for i, c in enumerate(choices) if isinstance(c, str))
-        if rendered:
-            question = f"{question}\n\nChoices:\n{rendered}"
+    if isinstance(choices, list):
+        choice_list = cast(list[Any], choices)
+        if choice_list:
+            rendered = "\n".join(
+                f"  {i + 1}. {c}" for i, c in enumerate(choice_list) if isinstance(c, str)
+            )
+            if rendered:
+                question = f"{question}\n\nChoices:\n{rendered}"
     return question
 
 
 def _unwrap_ask_user_args(args: dict[str, Any]) -> dict[str, Any]:
     """Recursively unwrap a {"command": "<json>"} envelope (up to 3 levels)."""
-    current: Any = args
+    current: dict[str, Any] = args
     for _ in range(3):
-        if not isinstance(current, dict):
-            break
         cmd = current.get("command")
         if isinstance(cmd, str) and cmd.lstrip().startswith("{"):
             try:
-                current = json.loads(cmd)
-                continue
+                parsed = json.loads(cmd)
             except json.JSONDecodeError:
                 break
+            if not isinstance(parsed, dict):
+                break
+            current = cast(dict[str, Any], parsed)
+            continue
         break
-    return current if isinstance(current, dict) else args
+    return current
 
 
 def _audit(
@@ -1140,7 +1164,7 @@ def _audit(
 ) -> None:
     logs = repo / ".aidor" / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    entry = {
+    entry: dict[str, Any] = {
         "ts": _utcnow(),
         "class": class_name,
         "source": source,
@@ -1185,7 +1209,7 @@ def _err(msg: str) -> None:
 def _load_yaml_simple(path: Path) -> dict[str, Any]:
     import yaml
 
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return _as_str_dict(yaml.safe_load(path.read_text(encoding="utf-8")))
 
 
 def _load_question_classes() -> dict[str, Any]:
@@ -1198,7 +1222,7 @@ def _load_question_classes() -> dict[str, Any]:
         return {"classes": [], "fallback": {"name": "unknown", "deterministic": "ask_human"}}
     import yaml
 
-    return yaml.safe_load(text) or {}
+    return _as_str_dict(yaml.safe_load(text))
 
 
 if __name__ == "__main__":

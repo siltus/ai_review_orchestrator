@@ -70,7 +70,7 @@ class RunConfig:
     # Path to the `copilot` binary. Overridable for testing with a fake.
     copilot_binary: str = "copilot"
 
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict[str, Any])
 
     # ---- Derived paths (all inside the repo) -------------------------------
 

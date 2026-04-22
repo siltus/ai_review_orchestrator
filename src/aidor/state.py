@@ -11,7 +11,7 @@ import os
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 PhaseName = Literal["review", "fix", "readiness_gate"]
 PhaseStatus = Literal["pending", "running", "done", "failed", "aborted"]
@@ -312,7 +312,7 @@ def _from_plain(data: Any) -> State:
 
     return State(
         version=version,
-        status=status,
+        status=cast(OverallStatus, status),
         started_at=started_at,
         ended_at=ended_at,
         current_round=current_round,

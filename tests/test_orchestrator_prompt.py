@@ -21,7 +21,7 @@ def orchestrator(tmp_path: Path):
     return Orchestrator(cfg)
 
 
-def _write_request(orchestrator: Orchestrator, body: dict) -> str:
+def _write_request(orchestrator: Orchestrator, body: dict) -> Path:
     path = orchestrator.config.aidor_dir / "pending" / "abc123.json"
     path.write_text(json.dumps(body), encoding="utf-8")
     return path

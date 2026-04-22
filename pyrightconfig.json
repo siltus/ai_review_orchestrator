@@ -1,0 +1,19 @@
+{
+  "include": ["src", "tests"],
+  "exclude": [".venv", ".aidor", "build", "dist"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "error",
+  "reportPossiblyUnboundVariable": "error",
+  "reportArgumentType": "error",
+  "reportInvalidTypeForm": "error",
+  "reportReturnType": "error",
+  "reportAssignmentType": "error",
+  "reportAttributeAccessIssue": "error",
+  "reportCallIssue": "error",
+  "reportGeneralTypeIssues": "error",
+  "reportIndexIssue": "error",
+  "reportOperatorIssue": "error"
+}

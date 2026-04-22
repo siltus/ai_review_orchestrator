@@ -6,6 +6,7 @@ project at the AGENTS.md ≥90% line-coverage floor.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from typer.testing import CliRunner
 
@@ -146,7 +147,7 @@ def test_terminate_no_op_when_already_exited(tmp_path: Path):
         returncode = 0
 
     pr = _runner(tmp_path)
-    asyncio.run(pr._terminate(_FakeProc()))
+    asyncio.run(pr._terminate(cast(asyncio.subprocess.Process, _FakeProc())))
 
 
 def test_terminate_calls_terminate_and_kill_when_force(tmp_path: Path):
@@ -167,7 +168,7 @@ def test_terminate_calls_terminate_and_kill_when_force(tmp_path: Path):
             calls.append(f"signal:{sig}")
 
     pr = _runner(tmp_path)
-    asyncio.run(pr._terminate(_FakeProc(), force=True))
+    asyncio.run(pr._terminate(cast(asyncio.subprocess.Process, _FakeProc()), force=True))
     assert "kill" in calls
     assert any(c == "terminate" or c.startswith("signal:") for c in calls)
 
@@ -185,7 +186,7 @@ def test_terminate_swallows_process_lookup(tmp_path: Path):
             raise ProcessLookupError
 
     pr = _runner(tmp_path)
-    asyncio.run(pr._terminate(_FakeProc()))
+    asyncio.run(pr._terminate(cast(asyncio.subprocess.Process, _FakeProc())))
 
 
 # ---- aidor run --dry-run ---------------------------------------------------

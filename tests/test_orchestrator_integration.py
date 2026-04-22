@@ -261,6 +261,8 @@ def test_readiness_gate_found_issues_routes_fix_to_gate_review(
     gate_phase = next(p for p in rnd1.phases if p.name == "readiness_gate")
     assert review_phase.artifact_path != gate_phase.artifact_path
     fix_prompt = captured_fix_prompts[0]
+    assert gate_phase.artifact_path is not None
+    assert review_phase.artifact_path is not None
     assert gate_phase.artifact_path in fix_prompt, (
         f"fix prompt must reference gate review path "
         f"{gate_phase.artifact_path!r}; prompt was:\n{fix_prompt}"
@@ -862,6 +864,7 @@ def test_fix_phase_summaryless_end_turn_fails_round(run_config, monkeypatch: pyt
     assert orch.state.status == "failed"
     rnd1 = orch.state.rounds[0]
     fix_phase = next(p for p in rnd1.phases if p.name == "fix")
+    assert fix_phase.artifact_path is not None
     assert not Path(fix_phase.artifact_path).exists()
     assert any("artefact_exists=False" in n for n in orch.state.notes)
     # review-0014: phase status must be downgraded — `done` cannot
@@ -972,4 +975,5 @@ def test_review_phase_end_turn_without_file_marks_phase_failed(
         f"review phase must be downgraded to failed when its artefact is "
         f"missing; got status={review_phase.status!r}"
     )
+    assert review_phase.artifact_path is not None
     assert not Path(review_phase.artifact_path).exists()
