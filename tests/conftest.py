@@ -12,6 +12,19 @@ import pytest
 from aidor.config import RunConfig
 
 
+@pytest.fixture(autouse=True)
+def _isolate_aidor_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip ambient AIDOR_* env vars so tests do not pick up the
+    repo-root / install-toggle of any aidor process that happens to be
+    driving the test runner. Without this fixture, running the suite
+    under an active aidor coder/reviewer phase would override
+    `_repo_root(payload)` with the outer agent's `AIDOR_REPO`, breaking
+    every test that assumes `tmp_path` IS the repo root.
+    """
+    for var in ("AIDOR_REPO", "AIDOR_ALLOW_LOCAL_INSTALL", "AIDOR_ROLE", "AIDOR_PHASE_INDEX"):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture
 def tmp_repo(tmp_path: Path) -> Path:
     """Initialise a bare git-less 'repo' scratch directory."""

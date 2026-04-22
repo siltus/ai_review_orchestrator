@@ -907,3 +907,71 @@ def test_pre_tool_use_falls_back_to_string_command_for_non_json(tmp_path: Path):
         "toolArgs": "ruff check src tests",
     }
     assert _on_pre_tool_use("preToolUse", payload) is None
+
+
+# ---- regression tests for dogfood-discovered false-positive denials -----
+
+
+def test_allow_redirection_2_to_1_does_not_split_on_amp(tmp_path: Path):
+    """`2>&1` contains `&` but is a redirection operator, not a
+    statement separator. Regression: previously the splitter cut at the
+    `&`, leaving `1` as a bogus second clause that no rule matched, so
+    every `pytest -q 2>&1` in dogfood was denied."""
+    assert _deny_decision(tmp_path, ".\\.venv\\Scripts\\python.exe -m pytest -q 2>&1") is None
+
+
+def test_allow_combined_redirection_amp_gt(tmp_path: Path):
+    """Bash `&>` and `&>>` redirect both stdout and stderr; the leading
+    `&` must not be treated as a separator."""
+    assert _deny_decision(tmp_path, "ruff check src &> out.txt") is None
+    assert _deny_decision(tmp_path, "ruff check src &>> out.txt") is None
+
+
+def test_split_does_not_break_redirection_in_chain(tmp_path: Path):
+    """`cmd1 2>&1; cmd2` must split into exactly two clauses; the
+    `&` in `2>&1` is part of the first clause, not a separator."""
+    from aidor.hook_resolver import _split_shell_statements
+
+    parts = _split_shell_statements("ruff check src 2>&1; pytest -q")
+    assert parts == ["ruff check src 2>&1", "pytest -q"]
+
+
+def test_allow_powershell_env_var_assignment_prefix(tmp_path: Path):
+    """PowerShell env-var assignment as a chained prefix
+    (`$env:PYTHONPATH='src'; python -m pytest`) must not be denied:
+    the assignment itself is an inert expression in this context, and
+    the real clause that follows is allowlisted on its own merits."""
+    assert _deny_decision(tmp_path, "$env:PYTHONPATH='src'; python -m pytest -q") is None
+
+
+def test_allow_powershell_bare_env_var_read(tmp_path: Path):
+    """`$env:FOO; $env:BAR` is a no-op pair of variable reads; not a
+    command invocation. It must not be denied."""
+    assert _deny_decision(tmp_path, "$env:AIDOR_REPO; $env:AIDOR_ALLOW_LOCAL_INSTALL") is None
+
+
+def test_allow_git_no_pager_global_flag(tmp_path: Path):
+    """`git --no-pager <subcmd>` is just `git <subcmd>` with paging
+    disabled; the global flag must be stripped before the allowlist
+    regex checks the subcommand."""
+    assert _deny_decision(tmp_path, "git --no-pager status --short") is None
+    assert _deny_decision(tmp_path, "git --no-pager log --oneline -n 5") is None
+
+
+def test_allow_git_dash_C_global_flag(tmp_path: Path):
+    """`git -C <path> <subcmd>` runs <subcmd> in <path>. The `-C path`
+    pair must be stripped before the subcommand is checked."""
+    assert _deny_decision(tmp_path, "git -C D:\\repo log --oneline") is None
+
+
+def test_git_global_flags_do_not_bypass_subcommand_deny(tmp_path: Path):
+    """Stripping `--no-pager` must NOT smuggle a denied subcommand
+    through. `git --no-pager push` is still denied because `push` is
+    not in the allowlist regex."""
+    assert _deny_decision(tmp_path, "git --no-pager push origin main") is not None
+
+
+def test_allow_aidor_summary(tmp_path: Path):
+    """`aidor summary` is the documented operator command; must be
+    allowlisted alongside doctor/abort/status."""
+    assert _deny_decision(tmp_path, "aidor summary") is None

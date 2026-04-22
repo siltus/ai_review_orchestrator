@@ -1,0 +1,85 @@
+# aidor default Copilot-tool allowlist
+# ----------------------------------------------------------------------
+# Loaded by `hook_resolver._load_tool_allowlist`. Every tool name not
+# appearing in this list (plus optional `<repo>/.aidor/tool_allowlist.yml`)
+# is denied by `preToolUse`/`permissionRequest`.
+#
+# Why deny-by-default: the spawn flags `--allow-all-tools --allow-all-paths`
+# disable Copilot's own approval matrix (see `guard_profile.py` for the
+# rationale), so the hook is the sole enforcer. If we only audited
+# shell-like tools, every other Copilot tool surface — MCP servers,
+# arbitrary `fetch`/network tools, agent-spawning tools, etc. — would be
+# unrestricted, which violates the AGENTS.md guard contract.
+#
+# Tool names are matched **case-sensitively** against the `toolName` /
+# `tool_name` field Copilot sends to the hook. Extend this list (do not
+# replace it) by adding entries to `<repo>/.aidor/tool_allowlist.yml`:
+#
+#   tools:
+#     - my_custom_mcp_tool
+#     - github-mcp-server-create_issue
+
+tools:
+  # ---- Always intercepted in code ------------------------------------
+  - ask_user
+  - report_intent
+  - task_complete
+
+  # ---- File reads / inspection (no path containment needed) ---------
+  - view
+  - Read
+  - read
+  - read_file
+  - list_dir
+  - Glob
+  - glob
+  - Grep
+  - grep
+  - find
+
+  # ---- File writes / edits (path containment enforced) --------------
+  - write
+  - Write
+  - edit
+  - Edit
+  - create
+  - MultiEdit
+  - str_replace
+  - str_replace_editor
+  - NotebookEdit
+
+  # ---- Shell (allowlist enforced via shell_allowlist.yml) -----------
+  - bash
+  - Bash
+  - powershell
+  - PowerShell
+  - shell
+  - run_in_terminal
+  - read_powershell
+  - write_powershell
+  - stop_powershell
+  - list_powershell
+
+  # ---- Web (informational, no side effects) -------------------------
+  - web_fetch
+  - WebFetch
+  - web_search
+  - WebSearch
+  - fetch
+
+  # ---- Status / meta / persistence (in-process) ---------------------
+  - store_memory
+  - skill
+  - fetch_copilot_cli_documentation
+
+  # ---- Sub-agent dispatch + lifecycle -------------------------------
+  - task
+  - Task
+  - read_agent
+  - list_agents
+  - write_agent
+  - stop_agent
+
+  # ---- Local SQL / session-store queries (read-only by default) -----
+  - sql
+  - session_store_sql

@@ -73,9 +73,9 @@ are written under `.aidor/` inside the target repo.
 | `config.py` | `RunConfig` dataclass + path derivations. Single source of truth for tunables. |
 | `bootstrap.py` | Idempotent on-disk setup: `AGENTS.md` managed block, `.github/agents/*.md`, `.github/hooks/aidor.json` (machine-specific, gitignored), `.aidor/` skeleton, `allowed_exceptions.yml` seed, config snapshot. |
 | `orchestrator.py` | The state machine. Drives `PhaseRunner` per phase, parses review footers, decides next phase, handles convergence + readiness gate, runs the human-watcher task. Persists `state.json` after every transition. |
-| `phase.py` | One Copilot subprocess. Builds argv (`--agent`, `--model`, `--share`, `--output-format=json`, `--allow-tool` / `--deny-tool` matrix from `guard_profile`), spawns it, streams stdout JSONL → events, streams stderr to disk, runs an idle + round-timeout watchdog (pause-aware while a hook is waiting on a human), restarts via `--continue` with exponential back-off. |
-| `guard_profile.py` | The `--allow-tool` / `--deny-tool` matrix. Every `shell(...)` rule is mirrored as `bash(...)` and `powershell(...)`. Extra rules unlocked when a real lockfile is present (NOT `pyproject.toml` alone). |
-| `hook_resolver.py` | Standalone process invoked by Copilot at every hook event. Implements the four-step `ask_user` resolver pipeline (policy → state → human → cancel), enforces path containment for write/edit/create, and writes the audit log + breadcrumbs. |
+| `phase.py` | One Copilot subprocess. Builds argv (`--agent`, `--model`, `--share`, `--output-format=json`, `--allow-all-tools` + `--allow-all-paths` from `guard_profile`), spawns it, streams stdout JSONL → events, streams stderr to disk, runs an idle + round-timeout watchdog (pause-aware while a hook is waiting on a human), restarts via `--continue` with exponential back-off. |
+| `guard_profile.py` | Returns the spawn flags (`--allow-all-tools --allow-all-paths`); see the module docstring for why the historical `--allow-tool` / `--deny-tool` matrix was abandoned. The actual security policy lives in `hook_resolver.py` and `policies/*.yml`. |
+| `hook_resolver.py` | Standalone process invoked by Copilot at every hook event. Enforces the **deny-by-default tool allowlist** (`policies/tool_allowlist.yml` + `.aidor/tool_allowlist.yml`), the **shell-clause allowlist** (`policies/shell_allowlist.yml` + `.aidor/shell_allowlist.yml`), and **path containment** for write/edit/create and shell tokens. Also implements the four-step `ask_user` resolver pipeline (policy → state → human → cancel) and writes the audit log + breadcrumbs. |
 | `review_store.py` | Numbered file allocation + AIDOR-footer parser/validator. |
 | `state.py` | `State`, `RoundRecord`, `PhaseRecord`, `RestartRecord`. Atomic save/load. |
 | `telemetry.py` | Best-effort parser for the Copilot OTel JSONL file exporter (tokens, cost, tool calls, turns). |
@@ -86,8 +86,10 @@ Static assets shipped with the wheel:
 
 - `src/aidor/agent_templates/` — `aidor-coder.md`, `aidor-reviewer.md`,
   `agents_md_block.md` (the managed block injected into `AGENTS.md`).
-- `src/aidor/policies/` — `allowed_exceptions.yml` seed,
-  `question_classes.yml` (deterministic-answer rules).
+- `src/aidor/policies/` — `allowed_exceptions.yml` (lint exceptions
+  seed), `question_classes.yml` (deterministic-answer rules),
+  `tool_allowlist.yml` (deny-by-default Copilot-tool surface),
+  `shell_allowlist.yml` (per-clause shell command policy).
 
 ## Per-run on-disk layout
 

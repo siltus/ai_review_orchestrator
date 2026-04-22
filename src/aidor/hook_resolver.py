@@ -100,8 +100,27 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
     if tool == "ask_user":
         return _handle_ask_user(payload, args)
 
+    # Tool allowlist: deny-by-default for every Copilot tool that is not
+    # in the curated list. The flag matrix in `guard_profile.py` is no
+    # longer in play (we spawn with `--allow-all-tools`), so without
+    # this check arbitrary MCP / network / agent-spawning tools would
+    # be unconstrained. See `policies/tool_allowlist.yml`.
+    decision = _check_tool_allowlist(payload, tool)
+    if decision is not None:
+        return decision
+
     # Path containment for file writes / edits / creates.
-    if tool in {"write", "edit", "create"}:
+    if tool in {
+        "write",
+        "edit",
+        "create",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "str_replace",
+        "str_replace_editor",
+        "NotebookEdit",
+    }:
         decision = _check_path_containment(payload, args)
         if decision is not None:
             return decision
@@ -110,7 +129,7 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
     # this, but the CLI's flag grammar can't express most of what we
     # need (see `guard_profile.py` module docstring); the hook is now
     # the sole enforcer of shell policy.
-    if tool in {"bash", "powershell", "shell", "run_in_terminal"}:
+    if tool in {"bash", "Bash", "powershell", "PowerShell", "shell", "run_in_terminal"}:
         decision = _check_shell_allowlist(payload, args)
         if decision is not None:
             return decision
@@ -122,14 +141,22 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
 
 
 def _on_permission_request(event: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    """permissionRequest: with `--allow-all-tools --allow-all-paths` the
-    approval layer short-circuits, so this event is rare (it can still
-    fire for tools not covered by the matrix, e.g. MCP or URL requests).
-
-    We log a breadcrumb and fall through; the `preToolUse` hook has
-    already had a chance to deny."""
+    """permissionRequest: belt-and-suspenders enforcement of the tool
+    allowlist. With `--allow-all-tools --allow-all-paths` the approval
+    layer short-circuits for tools the flag matrix knows about, but
+    Copilot may still raise `permissionRequest` for tools outside that
+    surface (MCP servers, URL requests, ...). Re-running the allowlist
+    here ensures non-allowlisted tools are denied at this layer too,
+    not just in `preToolUse`.
+    """
     tool = _get_field(payload, "toolName", "tool_name", default="")
-    _log_breadcrumb(payload, f"permissionRequest tool={tool!r} (no decision; hook is primary)")
+    decision = _check_tool_allowlist(payload, tool)
+    if decision is not None:
+        _log_breadcrumb(payload, f"permissionRequest deny tool={tool!r} (not in allowlist)")
+        return decision
+    _log_breadcrumb(
+        payload, f"permissionRequest tool={tool!r} (allowlisted; preToolUse is primary)"
+    )
     return None
 
 
@@ -398,6 +425,76 @@ def _ask_human(repo: Path, question: str, class_name: str) -> str:
 # ---- Path / shell defensive checks ----------------------------------------
 
 
+def _load_tool_allowlist(repo: Path) -> set[str]:
+    """Return the union of bundled and user-supplied allowed tool names.
+
+    Bundled defaults live in ``aidor.policies.tool_allowlist.yml`` and
+    cover the safe subset of Copilot tools we expect both agent roles
+    to use. Users may extend (never replace) by adding entries to
+    ``<repo>/.aidor/tool_allowlist.yml``::
+
+        tools:
+          - my_custom_mcp_tool
+
+    Tool names are matched case-sensitively against ``toolName``.
+    Malformed YAML or unreadable files are silently ignored — failing
+    open here would defeat the deny-by-default contract, but failing
+    closed on a parser hiccup would brick every Copilot run, so we
+    prefer the bundled defaults alone if the user file is broken.
+    """
+    names: set[str] = set()
+    try:
+        from importlib import resources
+
+        text = (resources.files("aidor.policies") / "tool_allowlist.yml").read_text(
+            encoding="utf-8"
+        )
+        import yaml
+
+        data = yaml.safe_load(text) or {}
+        for n in data.get("tools") or []:
+            if isinstance(n, str) and n.strip():
+                names.add(n.strip())
+    except Exception:  # pragma: no cover - defensive
+        pass
+    user = repo / ".aidor" / "tool_allowlist.yml"
+    if user.is_file():
+        try:
+            import yaml
+
+            data = yaml.safe_load(user.read_text(encoding="utf-8")) or {}
+            for n in data.get("tools") or []:
+                if isinstance(n, str) and n.strip():
+                    names.add(n.strip())
+        except Exception:  # pragma: no cover - defensive
+            pass
+    return names
+
+
+def _check_tool_allowlist(payload: dict[str, Any], tool: str) -> dict[str, Any] | None:
+    """Deny the call if ``tool`` is not in the curated allowlist.
+
+    A missing/empty tool name is *not* denied here — that would block
+    malformed payloads we have no policy for; the surrounding handler
+    logs and passes through. ``ask_user`` is intercepted by its own
+    handler before this runs, so it does not need to be in the list
+    (though it is, for clarity).
+    """
+    if not tool:
+        return None
+    repo = _repo_root(payload)
+    allow = _load_tool_allowlist(repo)
+    if tool in allow:
+        return None
+    return {
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            f"[aidor guard] refusing tool {tool!r}: not in aidor tool allowlist. "
+            "Extend .aidor/tool_allowlist.yml or ask the human to amend the default policy."
+        ),
+    }
+
+
 def _check_path_containment(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any] | None:
     repo = _repo_root(payload)
     for key in ("path", "file", "filePath", "target"):
@@ -515,7 +612,29 @@ def _split_shell_statements(cmd: str) -> list[str]:
                 buf.clear()
                 i += 2
                 continue
-            if ch in (";", "|", "&"):
+            if ch == "&":
+                # Redirection-aware: do NOT treat `&` as a separator
+                # when it is part of a shell redirection operator like
+                # `2>&1`, `>&2`, `&>`, `&>>`. Walk back over whitespace
+                # in `buf` and look at the last meaningful char; walk
+                # forward and look at the next char.
+                prev_nonspace = ""
+                for j in range(len(buf) - 1, -1, -1):
+                    if buf[j] != " " and buf[j] != "\t":
+                        prev_nonspace = buf[j]
+                        break
+                next_ch = cmd[i + 1] if i + 1 < n else ""
+                # `>&` (incl. `2>&`, `N>&`) - prev is `>`.
+                # `&>` / `&>>` (bash combined redirect) - next is `>`.
+                if prev_nonspace == ">" or next_ch == ">":
+                    buf.append(ch)
+                    i += 1
+                    continue
+                out.append("".join(buf).strip())
+                buf.clear()
+                i += 1
+                continue
+            if ch in (";", "|"):
                 out.append("".join(buf).strip())
                 buf.clear()
                 i += 1
@@ -545,8 +664,22 @@ def _iter_shell_clauses(cmd: str) -> Iterator[tuple[str, list[str]]]:
         tokens = [t for t in tokens if t and t not in _SHELL_OPERATORS]
         if not tokens:
             continue
-        exe = _normalise_exe(tokens[0])
+        # Skip pure PowerShell expression clauses with no side effects:
+        # variable reads (`$env:FOO`, `$var`) and env-var assignments
+        # (`$env:FOO='bar'`). These are inert in isolation; a real
+        # command following `;` will be evaluated as its own clause.
+        first = tokens[0]
+        if first.startswith("$"):
+            continue
+        exe = _normalise_exe(first)
         rest = tokens[1:]
+        # Strip git global flags that precede the subcommand so the
+        # allowlist regex (which starts at the subcommand) keeps
+        # working. `--no-pager`, `--paginate`, `--no-replace-objects`
+        # take no value; `-C <path>`, `--git-dir=...`, `--work-tree=...`,
+        # `--namespace=...`, `-c key=val` are also skipped.
+        if exe == "git":
+            rest = _strip_git_global_flags(rest)
         # Special case: `python -m pip install ...` → treat as (pip, install, ...).
         # Same for `python3`, `py`, and the `-m` module dispatch in general for pip.
         if exe in {"python", "python3", "py"} and len(rest) >= 2 and rest[0] == "-m":
@@ -555,6 +688,35 @@ def _iter_shell_clauses(cmd: str) -> Iterator[tuple[str, list[str]]]:
                 yield ("pip", rest[2:])
                 continue
         yield (exe, rest)
+
+
+def _strip_git_global_flags(tokens: list[str]) -> list[str]:
+    """Drop git's pre-subcommand global flags (``--no-pager``, ``-C dir``,
+    ``--git-dir=...``, ``-c key=val``) so the allowlist regex can match
+    the subcommand at position 0."""
+    valueless = {
+        "--no-pager",
+        "--paginate",
+        "--no-replace-objects",
+        "--bare",
+        "--literal-pathspecs",
+    }
+    valued_eq = ("--git-dir=", "--work-tree=", "--namespace=", "--super-prefix=", "--config-env=")
+    valued_pair = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix"}
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t in valueless:
+            i += 1
+            continue
+        if t.startswith(valued_eq):
+            i += 1
+            continue
+        if t in valued_pair and i + 1 < len(tokens):
+            i += 2
+            continue
+        break
+    return tokens[i:]
 
 
 def _flag_stem(token: str) -> str:

@@ -35,7 +35,14 @@ Copilot CLI in an automated review↔fix loop. It is a thin supervisor around
 - bootstraps two custom agents + hooks + an `AGENTS.md` managed block;
 - runs reviewer and coder phases in alternation until convergence or a
   hard budget is hit;
-- enforces a **Guard** allow/deny tool matrix (`--allow-tool` / `--deny-tool`);
+- enforces a **deny-by-default Guard** at the Copilot `preToolUse` /
+  `permissionRequest` hook layer (tool allowlist + path-containment +
+  shell-clause allowlist). The historical `--allow-tool` / `--deny-tool`
+  flag matrix was abandoned because the CLI's flag grammar cannot
+  express the policy we need; the hook (`aidor.hook_resolver`) is now
+  the single enforcement point and can be audited end-to-end without a
+  live Copilot subprocess. See [ARCHITECTURE.md](ARCHITECTURE.md) for
+  the full model and the policy files under `src/aidor/policies/`;
 - watches for idle / round-timeout, restarts via `--continue` with
   exponential back-off, and pauses timers when a hook is waiting on a
   human;

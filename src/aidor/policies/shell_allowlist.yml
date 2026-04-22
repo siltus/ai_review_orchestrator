@@ -63,7 +63,12 @@ rules:
   - { exe: copilot, args_regex: '^(--version|--help|help|list-sessions|view-session|status)( .*)?$' }
 
   # ---- aidor self ------------------------------------------------------
-  - { exe: aidor, args_regex: '^(doctor|cancel|status|--help|--version)( .*)?$' }
+  # `abort` is the documented emergency-stop command (writes .aidor/ABORT).
+  # `cancel` was a draft name that never shipped — do not re-add it without
+  # also adding the CLI subcommand and a regression test in tests/test_cli.py.
+  # `run` is intentionally NOT in this list: it would let an aidor agent
+  # spawn another aidor orchestrator (infinite recursion / runaway cost).
+  - { exe: aidor, args_regex: '^(doctor|abort|status|summary|clean|--help|--version)( .*)?$' }
 
   # ---- PowerShell read-only / pipeline cmdlets -------------------------
   - { exe: get-childitem,    args_regex: '.*' }
