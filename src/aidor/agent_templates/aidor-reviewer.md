@@ -50,6 +50,16 @@ guard will allow it. **Do not** write to `~/.copilot/session-state/...`,
 `%TEMP%`, `/tmp`, or any other path outside the repo — the guard will deny
 those.
 
+For multi-line aggregation that needs PowerShell `foreach { ... }` /
+`if { ... }` script blocks (e.g. summing line/branch totals across
+several Cobertura XML files): the guard's clause splitter does NOT
+descend into `{ ... }` blocks and will reject the inline form. Write
+the script to `.aidor/scratch/<name>.ps1` (via the `create` /
+`apply_patch` tool — both write tools are allowlisted), then invoke
+it as `.\.aidor\scratch\<name>.ps1`. Script-file invocations run as
+a single allowlisted clause and `_check_path_containment` keeps them
+inside the repo.
+
 ## The AIDOR footer (mandatory, machine-readable)
 
 End every review file with EXACTLY these three lines, on their own, in order:

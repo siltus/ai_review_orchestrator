@@ -123,7 +123,7 @@ rules:
   # `tag`, `fetch` — those can mutate auth/remote state or interact
   # with the network; users who need them can opt in via the per-repo
   # `.aidor/shell_allowlist.yml` extension).
-  - { exe: git, args_regex: '^(status|log|diff|show|branch|rev-parse|ls-files|ls-tree|cat-file|describe|reflog|blame|grep|symbolic-ref|for-each-ref|name-rev|shortlog|whatchanged)( .*)?$' }
+  - { exe: git, args_regex: '^(status|log|diff|show|branch|rev-parse|ls-files|ls-tree|cat-file|describe|reflog|blame|grep|symbolic-ref|for-each-ref|name-rev|shortlog|whatchanged|check-ignore|check-attr|check-ref-format)( .*)?$' }
   # Local-write subset (no push/remote-write).
   #
   # Deliberately EXCLUDES history-rewriting / data-loss commands —
@@ -218,6 +218,11 @@ rules:
   - { exe: rename-item,      args_regex: '.*' }
   - { exe: set-item,         args_regex: '.*' }
   - { exe: set-itemproperty, args_regex: '.*' }
+  # Shell control-flow builtins (no I/O, no path args). The arg, if
+  # any, is a numeric exit code. Used by reviewer aggregation scripts
+  # like `if ($LASTEXITCODE -ne 0) { exit $code }`.
+  - { exe: exit,             args_regex: '^(\d{1,3}|\$\w+)?$' }
+  - { exe: return,           args_regex: '^(\d{1,3}|\$\w+)?$' }
 
   # ---- Bash / Unix utilities ------------------------------------------
   - { exe: ls,       args_regex: '.*' }

@@ -1098,3 +1098,172 @@ def test_allow_aidor_summary(tmp_path: Path):
     """`aidor summary` is the documented operator command; must be
     allowlisted alongside doctor/abort/status."""
     assert _deny_decision(tmp_path, "aidor summary") is None
+
+
+# ---- video-organizer dogfood regressions (path scanner false positives) ----
+
+
+
+def test_looks_like_path_skips_powershell_heredoc_body(tmp_path: Path):
+    """The reviewer's `Set-Content -Path X -Value @'<markdown body>'@`
+    here-string body shlex-tokenises into one long string containing
+    `/` characters from markdown like `Suggested fixes / Production
+    verdict`. Pre-fix, that token tripped path containment with
+    `'/' -> D:\\` because the scanner thought the markdown sentence was
+    a path. Bodies with newlines must NOT be treated as path tokens."""
+    from aidor.hook_resolver import _looks_like_path
+
+    body = "# Summary\n\n## Issues\n\n1. Suggested fixes / Production verdict"
+    assert _looks_like_path(body) is False
+
+
+def test_looks_like_path_skips_regex_with_pipes(tmp_path: Path):
+    """Regex patterns passed to Select-String contain `|` and `\\[` /
+    `\\]`. The `\\[` once made the scanner think the token was a path
+    starting with `\\`. Tokens with `|`, `*`, `?`, `<`, `>`, `"` are
+    not legal Windows paths and must not be treated as such."""
+    from aidor.hook_resolver import _looks_like_path
+
+    pattern = r"\[coverage-gate\]|Successfully|Failed|Error"
+    assert _looks_like_path(pattern) is False
+
+
+def test_looks_like_path_still_catches_real_paths():
+    from aidor.hook_resolver import _looks_like_path
+
+    assert _looks_like_path(r"C:\Users\x\secret.txt") is True
+    assert _looks_like_path("/etc/passwd") is True
+    assert _looks_like_path(r"..\outside.txt") is True
+    assert _looks_like_path("~/.ssh/id_rsa") is True
+
+
+def test_set_content_with_markdown_heredoc_is_not_blocked(tmp_path: Path):
+    """End-to-end: the reviewer's typical `Set-Content` of a markdown
+    review body must not trip the path-containment scanner. Pre-fix,
+    this produced `'/' -> D:\\` denials in 3 reviewer rounds."""
+    cmd = (
+        "$content = @'\n# Summary\n\nSuggested fixes / Production verdict\n'@; "
+        "Set-Content -Path .aidor/reviews/review-0001.md -Value $content"
+    )
+    assert _shell_decision(tmp_path, cmd) is None
+
+
+def test_select_string_pipe_regex_in_command_is_not_blocked(tmp_path: Path):
+    """`Select-String -Pattern '\\[coverage-gate\\]|Failed|Error'`
+    inside a longer pipeline must not be treated as a path."""
+    cmd = (
+        r"dotnet build VideoOrganizer.sln --nologo 2>&1 | "
+        r"Select-String -Pattern '\[coverage-gate\]|Failed|Error' | "
+        r"Select-Object -Last 25"
+    )
+    assert _shell_decision(tmp_path, cmd) is None
+
+
+def test_allow_paren_wrapped_cmdlet(tmp_path: Path):
+    """`(Get-Content X) | Measure-Object` is allowed when both inner
+    cmdlets are on the allowlist. Pre-fix, the leading `(` glued onto
+    `get-content` so the exe-allowlist check failed."""
+    assert _deny_decision(tmp_path, "(Get-Content README.md) | Measure-Object -Line") is None
+
+
+def test_allow_paren_wrapped_cmdlet_with_property(tmp_path: Path):
+    """`(Get-Content X -Raw | ConvertFrom-Json).property` form. The
+    paren strip handles balanced wraps; the trailing `.property` keeps
+    the clause genuinely paren-wrapped at the boundaries."""
+    assert _deny_decision(tmp_path, "(Get-Content settings.json -Raw) | ConvertFrom-Json") is None
+
+
+def test_allow_git_check_ignore(tmp_path: Path):
+    """Read-only git plumbing used by the coder to verify whether a
+    path is correctly tracked vs. ignored. Pre-fix, this was denied
+    in 4 coder rounds across the video-organizer dogfood."""
+    assert _deny_decision(tmp_path, "git check-ignore -v .aidor/allowed_exceptions.yml") is None
+    assert _deny_decision(tmp_path, "git check-attr -a path/to/file") is None
+
+
+def test_allow_exit_with_numeric_code(tmp_path: Path):
+    """`exit 0` / `exit 1` / `exit $code` are shell control-flow
+    builtins used in reviewer aggregation scripts."""
+    assert _deny_decision(tmp_path, "exit 0") is None
+    assert _deny_decision(tmp_path, "exit 1") is None
+    assert _deny_decision(tmp_path, "exit $LASTEXITCODE") is None
+
+
+def test_deny_exit_with_arbitrary_argument(tmp_path: Path):
+    """`exit something_weird` is not a numeric code or variable; deny."""
+    assert _deny_decision(tmp_path, "exit hello-world") is not None
+
+
+# ---- apply_patch tool (Codex multi-file patch format) ----------------------
+
+
+def _apply_patch_decision(repo: Path, patch_body: str):
+    from aidor.hook_resolver import _on_pre_tool_use
+
+    payload = {
+        "toolName": "apply_patch",
+        "toolArgs": {"input": patch_body},
+        "cwd": str(repo),
+    }
+    return _on_pre_tool_use("preToolUse", payload)
+
+
+def test_apply_patch_allowed_for_in_repo_paths(tmp_path: Path):
+    body = (
+        "*** Begin Patch\n"
+        "*** Add File: .aidor/reviews/review-0001-x.md\n"
+        "+# Summary\n"
+        "+\n"
+        "+ok\n"
+        "*** End Patch\n"
+    )
+    assert _apply_patch_decision(tmp_path, body) is None
+
+
+def test_apply_patch_blocked_for_absolute_path_outside_repo(tmp_path: Path):
+    body = (
+        "*** Begin Patch\n"
+        "*** Add File: C:\\Users\\x\\secret.txt\n"
+        "+pwn\n"
+        "*** End Patch\n"
+    )
+    decision = _apply_patch_decision(tmp_path, body)
+    assert decision is not None
+    assert "outside the repo" in decision["permissionDecisionReason"]
+
+
+def test_apply_patch_blocked_for_traversal_path(tmp_path: Path):
+    body = (
+        "*** Begin Patch\n"
+        "*** Update File: ../../etc/passwd\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** End Patch\n"
+    )
+    decision = _apply_patch_decision(tmp_path, body)
+    assert decision is not None
+
+
+def test_apply_patch_blocked_for_move_outside_repo(tmp_path: Path):
+    """`*** Move to: <new>` rename target is also containment-checked."""
+    body = (
+        "*** Begin Patch\n"
+        "*** Update File: src/inside.py\n"
+        "*** Move to: ../../outside.py\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** End Patch\n"
+    )
+    decision = _apply_patch_decision(tmp_path, body)
+    assert decision is not None
+
+
+def test_apply_patch_in_tool_allowlist(tmp_path: Path):
+    """apply_patch must pass the tool-allowlist check (was missing,
+    causing 5/5 reviewer rounds to fall back to `create` / `edit`)."""
+    from aidor.hook_resolver import _check_tool_allowlist
+
+    payload = {"cwd": str(tmp_path)}
+    assert _check_tool_allowlist(payload, "apply_patch") is None

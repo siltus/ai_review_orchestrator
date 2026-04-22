@@ -52,6 +52,14 @@ tools:
   - str_replace
   - str_replace_editor
   - NotebookEdit
+  # `apply_patch` is the Codex-style multi-file patch tool. The patch
+  # body is parsed by `_check_path_containment` and every per-file
+  # header (`*** Add/Update/Delete File: <path>`, `*** Move to: <p>`)
+  # is verified to stay inside the repo, so allowing it does not bypass
+  # path containment. The reviewer agent reaches for it on every round
+  # to write the review file; allowlisting saved ~5 denials/run in the
+  # video-organizer dogfood.
+  - apply_patch
 
   # ---- Shell (allowlist enforced via shell_allowlist.yml) -----------
   - bash

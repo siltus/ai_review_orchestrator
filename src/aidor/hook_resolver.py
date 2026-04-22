@@ -135,6 +135,7 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
         "str_replace",
         "str_replace_editor",
         "NotebookEdit",
+        "apply_patch",
     }:
         decision = _check_path_containment(payload, args)
         if decision is not None:
@@ -530,7 +531,55 @@ def _check_path_containment(payload: dict[str, Any], args: dict[str, Any]) -> di
                         f"[aidor guard] refusing to touch path outside the repo: {target}"
                     ),
                 }
+    # ``apply_patch`` carries its file targets inside the patch body
+    # rather than as a discrete ``path`` arg. Parse the body and run
+    # every affected file through the same containment check, so the
+    # tool can be allowlisted without losing the path-escape guard.
+    patch_body = args.get("input") or args.get("patch") or ""
+    if isinstance(patch_body, str) and patch_body:
+        for raw_path in _iter_apply_patch_paths(patch_body):
+            target = Path(raw_path)
+            target = (repo / target).resolve() if not target.is_absolute() else target.resolve()
+            try:
+                target.relative_to(repo.resolve())
+            except ValueError:
+                return {
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        f"[aidor guard] refusing apply_patch touching path outside "
+                        f"the repo: {target}"
+                    ),
+                }
     return None
+
+
+# ``apply_patch`` mini-format header lines we recognise. The patch body
+# wraps each per-file section in a ``*** <verb> File: <path>`` header;
+# anything else (context, hunks, ``*** End Patch``) is ignored for
+# containment purposes.
+_APPLY_PATCH_HEADER_RE = re.compile(
+    r"^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s+(.+?)\s*$",
+    re.MULTILINE,
+)
+# ``*** Move to: <new-path>`` follows an ``*** Update File:`` header for
+# rename operations; the new path must also be inside the repo.
+_APPLY_PATCH_MOVE_RE = re.compile(
+    r"^\*\*\*\s+Move\s+to:\s+(.+?)\s*$",
+    re.MULTILINE,
+)
+
+
+def _iter_apply_patch_paths(body: str) -> Iterator[str]:
+    """Yield every file path referenced by an ``apply_patch`` body.
+
+    Both the per-file headers and any rename ``*** Move to:`` targets
+    are surfaced so containment can reject patches that try to add /
+    rewrite / rename a file outside the repo root.
+    """
+    for m in _APPLY_PATCH_HEADER_RE.finditer(body):
+        yield m.group(1).strip().strip('"').strip("'")
+    for m in _APPLY_PATCH_MOVE_RE.finditer(body):
+        yield m.group(1).strip().strip('"').strip("'")
 
 
 # ---- Shell policy enforcement ---------------------------------------------
@@ -675,6 +724,30 @@ def _iter_shell_clauses(cmd: str) -> Iterator[tuple[str, list[str]]]:
     (``cd``, ``npm``) and the dangerous one is still detected.
     """
     for clause in _split_shell_statements(cmd):
+        # Strip a paren-wrapped subexpression form: `(get-content X)`,
+        # `(Get-Content $f -Raw | ConvertFrom-Json)`. The split has
+        # already grouped `(...)` as a single clause; here we unwrap so
+        # the inner verb is what hits the exe-allowlist check rather
+        # than the literal token `(get-content`. We only unwrap when
+        # the parens are balanced at the boundaries of the clause —
+        # otherwise it's a real PowerShell sub-expression that we
+        # cannot statically disassemble safely.
+        stripped = clause.strip()
+        while stripped.startswith("(") and stripped.endswith(")"):
+            depth = 0
+            balanced = True
+            for i, ch in enumerate(stripped):
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0 and i != len(stripped) - 1:
+                        balanced = False
+                        break
+            if not balanced:
+                break
+            stripped = stripped[1:-1].strip()
+        clause = stripped
         try:
             tokens = shlex.split(clause, posix=False)
         except ValueError:
@@ -1061,6 +1134,27 @@ def _looks_like_path(token: str) -> bool:
     if not token:
         return False
     if _URI_SCHEME_RE.match(token):
+        return False
+    # Real filesystem paths can never contain these characters: Windows
+    # reserves `<>:"|?*` in file names (drive-letter `:` is the only
+    # legitimate use, handled by ``_PATH_SHAPED_RE`` on the value side),
+    # and `\n` / `\r` aren't legal in any OS. Tokens containing any of
+    # them are typically PowerShell here-doc bodies (Set-Content @'...'@
+    # with markdown like "Suggested fixes / Production-readiness
+    # verdict") or regex patterns passed to Select-String / Where-Object
+    # (`'\[coverage-gate\]|Successfully|Failed'`). Treating those as
+    # paths produced spurious "outside the repo" denials in long agent
+    # runs (observed 7+ times across reviewer rounds 2-5 in the
+    # video-organizer dogfood).
+    if any(ch in token for ch in "\n\r|*?<>"):
+        return False
+    if '"' in token:
+        return False
+    # A bare separator (`/` or `\`) with nothing else is noise from
+    # shlex-splitting English markdown bodies on whitespace
+    # ("Suggested fixes / Production verdict" yields a standalone `/`
+    # token). Real paths always carry at least one alphanumeric char.
+    if not any(ch.isalnum() for ch in token):
         return False
     return "/" in token or "\\" in token or token.startswith("~") or token.startswith("..")
 
