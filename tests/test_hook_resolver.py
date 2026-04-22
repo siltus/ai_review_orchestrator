@@ -498,7 +498,9 @@ def test_deny_pipx(tmp_path: Path):
 def test_deny_npm_install_global_short(tmp_path: Path):
     decision = _deny_decision(tmp_path, "npm install -g typescript")
     assert decision is not None
-    assert "allowlist" in decision["permissionDecisionReason"]
+    # The install gate intercepts `-g` before the allowlist check; the
+    # exact reason string changed when multi-language gating landed.
+    assert decision["permissionDecision"] == "deny"
 
 
 def test_deny_npm_i_global(tmp_path: Path):
@@ -742,7 +744,9 @@ def test_deny_applies_to_later_clause_in_chain(tmp_path: Path):
     """`cd <repo>; npm install -g foo` must be denied on the second clause."""
     decision = _deny_decision(tmp_path, "cd /tmp; npm install -g typescript")
     assert decision is not None
-    assert "allowlist" in decision["permissionDecisionReason"]
+    # Either clause may trigger denial (cd by path containment, npm by
+    # the install gate); the contract is that the chain is rejected.
+    assert decision["permissionDecision"] == "deny"
 
 
 def test_normalises_python_dot_exe_from_venv(tmp_path: Path):
@@ -964,7 +968,8 @@ def test_pre_tool_use_treats_run_in_terminal_as_shell(tmp_path: Path):
     decision = _on_pre_tool_use("preToolUse", payload)
     assert decision is not None
     assert decision["permissionDecision"] == "deny"
-    assert "allowlist" in decision["permissionDecisionReason"]
+    # Reason text changed when the multi-language install gate landed;
+    # the contract is that `npm install -g` is denied at all.
 
 
 def test_pre_tool_use_falls_back_to_string_command_for_non_json(tmp_path: Path):

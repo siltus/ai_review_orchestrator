@@ -301,20 +301,47 @@ _GO_DEV_TOOLS: frozenset[str] = frozenset(
     }
 )
 
-# Union exposed to the existing pip-only ``is_dev_tool`` consumer.
-# When an ``npm install`` / ``dotnet tool install`` / ``cargo install``
-# gate lands, it should consume the per-ecosystem set above directly
-# rather than this union, to keep cross-ecosystem name collisions from
-# silently widening the policy.
-_DEV_TOOL_ALLOWLIST: frozenset[str] = (
-    _PYTHON_DEV_TOOLS
-    | _NODE_DEV_TOOLS
-    | _DOTNET_DEV_TOOLS
-    | _JVM_DEV_TOOLS
-    | _ANDROID_DEV_TOOLS
-    | _RUST_DEV_TOOLS
-    | _GO_DEV_TOOLS
-)
+# Per-ecosystem dev-tool sets, indexed by the ecosystem keys used by
+# ``_install_allowed`` in ``hook_resolver``. Each install gate consumes
+# its own slice so a name collision (e.g. a Node package called
+# ``coverage``) cannot silently widen the policy for the wrong tool.
+_DEV_TOOLS_BY_ECOSYSTEM: dict[str, frozenset[str]] = {
+    "python": _PYTHON_DEV_TOOLS,
+    "node": _NODE_DEV_TOOLS,
+    "dotnet": _DOTNET_DEV_TOOLS,
+    # JVM tools are file-driven (Maven/Gradle); the dev-tool list is kept
+    # here for completeness but no install gate consumes it directly yet.
+    "jvm": _JVM_DEV_TOOLS,
+    "android": _ANDROID_DEV_TOOLS,
+    "cargo": _RUST_DEV_TOOLS,
+    "go": _GO_DEV_TOOLS,
+}
+
+# Backwards-compatible union used by the ecosystem-less ``is_dev_tool``
+# callers. New code should prefer ``is_dev_tool(name, ecosystem=...)``.
+_DEV_TOOL_ALLOWLIST: frozenset[str] = frozenset().union(*_DEV_TOOLS_BY_ECOSYSTEM.values())
+
+# Project-scope dependency anchors per ecosystem. Mirrors the Python
+# anchor list above: when one of these files is present in the repo we
+# trust that an install command is operating against an explicit, repo-
+# tracked dependency declaration rather than smuggling arbitrary
+# packages.
+_INSTALL_ANCHORS_BY_ECOSYSTEM: dict[str, tuple[str, ...]] = {
+    "python": _PYTHON_INSTALL_ANCHOR_MARKERS,
+    "node": ("package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"),
+    "cargo": ("Cargo.toml", "Cargo.lock"),
+    "go": ("go.mod", "go.sum"),
+    # `.csproj`, `.sln`, `.fsproj` are matched by glob in
+    # ``detect_install_anchor``; the literal entries here are fallbacks.
+    "dotnet": ("global.json", "Directory.Build.props"),
+}
+
+# Glob patterns whose presence anywhere in the repo root counts as an
+# anchor for the given ecosystem (in addition to the literal filenames
+# above).
+_INSTALL_ANCHOR_GLOBS: dict[str, tuple[str, ...]] = {
+    "dotnet": ("*.csproj", "*.fsproj", "*.vbproj", "*.sln"),
+}
 
 
 def detect_local_install_available(repo: Path) -> bool:
@@ -342,16 +369,56 @@ def detect_python_install_anchor(repo: Path) -> bool:
     return any((repo / marker).exists() for marker in _PYTHON_INSTALL_ANCHOR_MARKERS)
 
 
-def is_dev_tool(name: str) -> bool:
-    """True iff ``name`` (a pip install target) is on the curated
-    test/dev tooling allowlist. Strips a trailing ``[extra]`` and any
-    version specifier (``pkg==1.2.3`` -> ``pkg``)."""
+def detect_install_anchor(repo: Path, ecosystem: str) -> bool:
+    """True iff ``repo`` ships an install anchor for ``ecosystem``.
+
+    Generic counterpart to ``detect_python_install_anchor``. ``ecosystem``
+    is one of ``python | node | cargo | go | dotnet``. Unknown ecosystems
+    return False (deny-by-default)."""
+    if ecosystem == "python":
+        return detect_python_install_anchor(repo)
+    for marker in _INSTALL_ANCHORS_BY_ECOSYSTEM.get(ecosystem, ()):
+        if (repo / marker).exists():
+            return True
+    for pattern in _INSTALL_ANCHOR_GLOBS.get(ecosystem, ()):
+        # ``Path.glob`` is non-recursive without ``**``; we only check
+        # the repo root because nested manifests (e.g. a vendored
+        # subproject) shouldn't widen the install scope of the parent.
+        for _ in repo.glob(pattern):
+            return True
+    return False
+
+
+def is_dev_tool(name: str, ecosystem: str | None = None) -> bool:
+    """True iff ``name`` is on the curated test/dev tooling allowlist.
+
+    When ``ecosystem`` is provided (``python | node | cargo | go |
+    dotnet | jvm | android``) only that ecosystem's slice is consulted —
+    this is what the install gates should use, to keep a Node package
+    called ``coverage`` from authorising a pip install of the same name.
+
+    When ``ecosystem`` is None the full union is consulted (legacy
+    behaviour, kept for callers that don't know which ecosystem they're
+    looking at).
+
+    Strips a trailing ``[extra]`` and any version specifier
+    (``pkg==1.2.3`` -> ``pkg``)."""
     base = name.split("[", 1)[0]
     for sep in ("==", ">=", "<=", "~=", "!=", ">", "<", "==="):
         if sep in base:
             base = base.split(sep, 1)[0]
             break
-    return base.strip().lower() in _DEV_TOOL_ALLOWLIST
+    # Node-style ``pkg@1.2.3`` (but NOT scoped ``@scope/pkg``).
+    if "@" in base[1:]:
+        # Find the first ``@`` after position 0.
+        cut = base.index("@", 1)
+        base = base[:cut]
+    # Cargo/go ``crate:version`` is rarer; cargo install uses
+    # ``--version`` flag separately so we don't strip ``:`` here.
+    needle = base.strip().lower()
+    if ecosystem is None:
+        return needle in _DEV_TOOL_ALLOWLIST
+    return needle in _DEV_TOOLS_BY_ECOSYSTEM.get(ecosystem, frozenset())
 
 
 def build_flags(

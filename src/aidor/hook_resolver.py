@@ -745,58 +745,139 @@ def _flag_stem(token: str) -> str:
     return token
 
 
+# Per-ecosystem install-gate metadata. Each entry describes one or
+# more ``(exe, install-verb)`` pairs that flow through
+# ``_package_install_allowed``. The matched verb is consumed (so the
+# remaining positionals are the actual install targets); ``unsafe_flags``
+# are denied unconditionally because they all install outside the
+# project tree (`-g`, `--global`, `--prefix`, ...).
+#
+# The ``install_verbs`` matcher is responsible for telling
+# ``npm install`` (positional install) from ``npm install-test`` (a
+# different verb). Verbs are matched against the FIRST positional token
+# only.
+_INSTALL_GATES: dict[str, dict[str, Any]] = {
+    "python": {
+        "exes": ("pip", "pip3"),
+        "install_verbs": ("install",),
+        "unsafe_flags": frozenset({"--user", "--target", "--prefix", "--root"}),
+        "anchor_hint": (
+            "poetry.lock / uv.lock / Pipfile.lock / pyproject.toml / "
+            "setup.{cfg,py} / requirements*.txt"
+        ),
+        "dev_tool_hint": "pytest, ruff, pre-commit, pip-audit, pyright, ...",
+    },
+    "node": {
+        "exes": ("npm", "pnpm", "yarn"),
+        # ``npm i`` / ``npm add`` / ``yarn add`` / ``pnpm add`` etc.
+        "install_verbs": ("install", "i", "add", "ci"),
+        "unsafe_flags": frozenset({"--global", "-g", "--prefix"}),
+        "anchor_hint": "package.json / package-lock.json / pnpm-lock.yaml / yarn.lock",
+        "dev_tool_hint": "vitest, eslint, prettier, typescript, playwright, ...",
+    },
+    "cargo": {
+        "exes": ("cargo",),
+        # ``cargo install <crate>`` (global-ish: writes to CARGO_HOME),
+        # ``cargo add <crate>`` (edits Cargo.toml).
+        "install_verbs": ("install", "add"),
+        "unsafe_flags": frozenset({"--root"}),
+        "anchor_hint": "Cargo.toml / Cargo.lock",
+        "dev_tool_hint": "cargo-audit, cargo-deny, cargo-nextest, cargo-llvm-cov, ...",
+    },
+    "go": {
+        "exes": ("go",),
+        "install_verbs": ("install", "get"),
+        "unsafe_flags": frozenset(),
+        "anchor_hint": "go.mod / go.sum",
+        "dev_tool_hint": "golangci-lint, staticcheck, gofumpt, gosec, gotestsum, ...",
+    },
+    "dotnet": {
+        "exes": ("dotnet",),
+        # ``dotnet add <pkg>``, ``dotnet tool install <pkg>``,
+        # ``dotnet restore`` (anchor-only — has no positional pkg).
+        "install_verbs": ("add", "tool", "restore"),
+        "unsafe_flags": frozenset({"--global", "-g"}),
+        "anchor_hint": "*.csproj / *.sln / global.json",
+        "dev_tool_hint": "xunit, nunit, coverlet.collector, dotnet-format, csharpier, ...",
+    },
+}
+
+
+def _package_install_allowed(
+    args: list[str],
+    *,
+    ecosystem: str,
+    allow_local_install: bool,
+    install_anchor: bool,
+) -> tuple[bool, str]:
+    """Generic install-policy gate shared by pip / npm / cargo / go /
+    dotnet. ``args`` is the full token list AFTER the executable, with
+    the install verb as ``args[0]`` (e.g. ``["install", "-r",
+    "requirements.txt"]``).
+
+    Policy is identical to the historical pip gate: deny unsafe
+    write-outside-project flags, deny unless ``allow_local_install``,
+    allow when an anchor file exists, otherwise allow only if every
+    positional install target is on the curated dev-tool allowlist for
+    that ecosystem."""
+    from aidor.guard_profile import is_dev_tool
+
+    spec = _INSTALL_GATES[ecosystem]
+    unsafe = spec["unsafe_flags"]
+    for tok in args:
+        stem = _flag_stem(tok).lower()
+        if stem in unsafe:
+            return (False, f"{spec['exes'][0]} install {stem} writes outside the repo")
+    if not allow_local_install:
+        return (
+            False,
+            f"{spec['exes'][0]} install requires AIDOR_ALLOW_LOCAL_INSTALL=1",
+        )
+    if install_anchor:
+        return (True, "")
+    # No anchor: every positional target must be on the dev-tool list.
+    # ``args[0]`` is the install verb itself; for multi-token verbs
+    # like ``dotnet tool install`` the second token is consumed too.
+    skip = 1
+    if (
+        ecosystem == "dotnet"
+        and len(args) >= 2
+        and args[0] == "tool"
+        and args[1] in {"install", "update", "restore"}
+    ):
+        skip = 2
+    elif ecosystem == "dotnet" and args and args[0] == "restore":
+        # ``dotnet restore`` with no positional → anchor-required only.
+        return (
+            False,
+            f"dotnet restore requires a project anchor ({spec['anchor_hint']})",
+        )
+    positionals = [t for t in args[skip:] if not t.startswith("-")]
+    if positionals and all(is_dev_tool(p, ecosystem=ecosystem) for p in positionals):
+        return (True, "")
+    return (
+        False,
+        f"{spec['exes'][0]} install requires a project dependency anchor "
+        f"({spec['anchor_hint']}) or every target on the curated "
+        f"dev-tool allowlist ({spec['dev_tool_hint']})",
+    )
+
+
 def _pip_install_allowed(
     args: list[str],
     *,
     allow_local_install: bool,
     python_install_anchor: bool,
 ) -> tuple[bool, str]:
-    """Decide whether a ``pip install ...`` invocation is permitted.
+    """Backwards-compatible thin wrapper around
+    :func:`_package_install_allowed` for the Python ecosystem.
 
-    Returns ``(allowed, reason)``. ``reason`` is empty when allowed,
-    human-readable when denied.
-
-    Policy (in order):
-      * ``--user`` / ``--target`` / ``--prefix`` / ``--root`` always
-        deny — they write outside the project tree.
-      * If ``allow_local_install`` is False, deny.
-      * If a project-scoped dependency anchor exists (lockfile,
-        pyproject.toml, setup.{cfg,py}, requirements*.txt), allow.
-      * Otherwise, allow only if every positional install target is on
-        the curated dev/test tooling allowlist (pytest, ruff,
-        pre-commit, pip-audit, pyright, etc.). This lets the coder
-        bootstrap the local quality gate in projects that haven't
-        generated a lockfile yet, without permitting arbitrary runtime
-        dependencies to be added behind the maintainer's back.
-    """
-    from aidor.guard_profile import is_dev_tool
-
-    # Any of the --user / --target / --prefix / --root forms writes
-    # outside the project tree and is always denied.
-    for tok in args:
-        stem = _flag_stem(tok).lower()
-        if stem in _PIP_INSTALL_UNSAFE_FLAGS:
-            return (False, f"pip install {stem} writes outside the repo")
-    if not allow_local_install:
-        return (
-            False,
-            "pip install requires AIDOR_ALLOW_LOCAL_INSTALL=1",
-        )
-    if python_install_anchor:
-        return (True, "")
-    # No anchor file: only allow if every positional target is on the
-    # dev-tool allowlist. ``-r requirements*.txt`` etc. would have
-    # tripped the anchor check above.
-    positionals = [t for t in args[1:] if not t.startswith("-")]  # skip leading 'install'
-    if positionals and all(is_dev_tool(p) for p in positionals):
-        return (True, "")
-    return (
-        False,
-        "pip install requires a project dependency anchor "
-        "(poetry.lock / uv.lock / Pipfile.lock / pyproject.toml / "
-        "setup.{cfg,py} / requirements*.txt) or every target on the "
-        "curated dev-tool allowlist (pytest, ruff, pre-commit, "
-        "pip-audit, pyright, ...)",
+    Kept because the existing test suite imports this symbol directly."""
+    return _package_install_allowed(
+        args,
+        ecosystem="python",
+        allow_local_install=allow_local_install,
+        install_anchor=python_install_anchor,
     )
 
 
@@ -865,26 +946,53 @@ def _check_shell_allowlist(payload: dict[str, Any], args: dict[str, Any]) -> dic
     if not isinstance(cmd, str) or not cmd:
         return None
 
-    from aidor.guard_profile import detect_python_install_anchor
+    from aidor.guard_profile import detect_install_anchor, detect_python_install_anchor
 
     repo = _repo_root(payload)
     rules = _load_shell_allowlist(repo)
     allow_local_install = os.environ.get("AIDOR_ALLOW_LOCAL_INSTALL", "0") == "1"
     python_install_anchor = allow_local_install and detect_python_install_anchor(repo)
 
+    # Map each install-gated executable to its ecosystem key. Built once
+    # per call so we don't traverse _INSTALL_GATES inside the clause loop.
+    exe_to_ecosystem: dict[str, str] = {}
+    for eco, spec in _INSTALL_GATES.items():
+        for exe_name in spec["exes"]:
+            exe_to_ecosystem[exe_name] = eco
+
     for exe, rest in _iter_shell_clauses(cmd):
         if not exe:
             continue
 
-        # Special case: pip install — always go through the gate, even
-        # if a permissive allowlist rule would otherwise match.
-        if exe in {"pip", "pip3"}:
+        # Install-verb intercept: pip / npm / yarn / pnpm / cargo / go /
+        # dotnet all flow through the same code-side gate, regardless of
+        # any allowlist rule that might match. The allowlist still
+        # decides what NON-install subcommands are permitted.
+        ecosystem = exe_to_ecosystem.get(exe)
+        if ecosystem is not None:
+            verbs: tuple[str, ...] = _INSTALL_GATES[ecosystem]["install_verbs"]
             positional = [t for t in rest if not t.startswith("-")]
-            if positional and positional[0].lower() == "install":
-                allowed, reason = _pip_install_allowed(
-                    rest,
+            if positional and positional[0].lower() in verbs:
+                if ecosystem == "python":
+                    install_anchor = python_install_anchor
+                else:
+                    install_anchor = allow_local_install and detect_install_anchor(repo, ecosystem)
+                # Pass only the positional-tail-relative args (drop
+                # leading flags before the verb so the gate sees the
+                # verb at args[0]). We rebuild ``args_after_verb`` by
+                # stripping flags that precede the verb.
+                pre_verb_flags: list[str] = []
+                tail = list(rest)
+                while tail and tail[0].startswith("-"):
+                    pre_verb_flags.append(tail.pop(0))
+                # tail[0] is now the verb. Reattach flags AFTER the verb
+                # so the gate's flag scan still sees them.
+                gate_args = [tail[0], *pre_verb_flags, *tail[1:]]
+                allowed, reason = _package_install_allowed(
+                    gate_args,
+                    ecosystem=ecosystem,
                     allow_local_install=allow_local_install,
-                    python_install_anchor=python_install_anchor,
+                    install_anchor=install_anchor,
                 )
                 if allowed:
                     continue

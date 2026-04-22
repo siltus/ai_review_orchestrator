@@ -50,6 +50,68 @@ rules:
   - { exe: pip,  args_regex: '^(list|show|freeze|check|index|debug|cache|--version|--help)( .*)?$' }
   - { exe: pip3, args_regex: '^(list|show|freeze|check|index|debug|cache|--version|--help)( .*)?$' }
 
+  # ---- Node / npm / yarn / pnpm ---------------------------------------
+  # Install verbs (install / i / add / ci) are intercepted in code by
+  # `_package_install_allowed`. The rules below permit the non-install
+  # subcommands the local quality gate typically needs (test, run-script,
+  # lint, format, audit, ls, version queries). `--global` / `-g` install
+  # flags are denied unconditionally inside the install gate.
+  - { exe: npm,  args_regex: '^(install|i|add|ci)( .*)?$' }
+  - { exe: npm,  args_regex: '^(test|run|run-script|exec|x|start|build|version|ls|list|view|outdated|audit|fund|ping|whoami|config|help|--version|-v|--help)( .*)?$' }
+  - { exe: pnpm, args_regex: '^(install|i|add|ci)( .*)?$' }
+  - { exe: pnpm, args_regex: '^(test|run|exec|dlx|start|build|version|ls|list|view|outdated|audit|why|store|env|config|help|--version|-v|--help)( .*)?$' }
+  - { exe: yarn, args_regex: '^(install|add|ci)( .*)?$' }
+  - { exe: yarn, args_regex: '^(test|run|exec|dlx|start|build|version|ls|list|info|outdated|audit|why|workspaces?|config|help|--version|-v|--help)( .*)?$' }
+  # `npx` is intentionally NOT allowlisted: `npx -y <pkg>` is an
+  # implicit global install + execute that bypasses the install gate.
+  # If a workflow genuinely needs it, opt in via per-repo
+  # `.aidor/shell_allowlist.yml`.
+  # `node` script execution (path containment still applies).
+  - { exe: node, args_regex: '.*' }
+
+  # ---- Rust / cargo ---------------------------------------------------
+  # Install verbs (install / add) are intercepted in code; the rules
+  # below permit the day-to-day cargo workflow (build / test / fmt /
+  # clippy / audit / etc.). `cargo` reads/writes inside the project
+  # tree by default; `--root` is denied inside the install gate.
+  - { exe: cargo, args_regex: '^(install|add)( .*)?$' }
+  - { exe: cargo, args_regex: '^(build|check|test|run|bench|doc|fmt|clippy|fix|tree|search|update|metadata|locate-project|version|help|audit|deny|nextest|llvm-cov|tarpaulin|machete|outdated|msrv|bloat|--version|-V|--help|-h)( .*)?$' }
+  - { exe: rustup, args_regex: '^(show|which|toolchain\s+(list|show)|component\s+list|target\s+list|--version|--help)( .*)?$' }
+
+  # ---- Go -------------------------------------------------------------
+  # `go install` / `go get` are install verbs intercepted in code. The
+  # rest of the toolchain (build/test/fmt/vet/mod/work) is allowlisted
+  # here. `go env -w` is permitted because it only mutates the user's
+  # ``go env`` cache, not the repo; if you want to deny it, do so via a
+  # per-repo `.aidor/shell_allowlist.yml` override.
+  - { exe: go, args_regex: '^(install|get)( .*)?$' }
+  - { exe: go, args_regex: '^(build|test|run|vet|fmt|generate|mod|work|tool|version|env|list|doc|clean|--help|help)( .*)?$' }
+  - { exe: gofmt,    args_regex: '.*' }
+  - { exe: goimports, args_regex: '.*' }
+  - { exe: golangci-lint, args_regex: '.*' }
+  - { exe: staticcheck,   args_regex: '.*' }
+  - { exe: gosec,         args_regex: '.*' }
+  - { exe: gotestsum,     args_regex: '.*' }
+
+  # ---- .NET / dotnet --------------------------------------------------
+  # Install verbs (`add package`, `tool install`, `restore`) are
+  # intercepted in code. The rest of the SDK is allowlisted here.
+  # `--global` / `-g` on `tool install` are denied inside the gate.
+  - { exe: dotnet, args_regex: '^(add|tool|restore)( .*)?$' }
+  # `workload` is omitted on purpose: `dotnet workload install` mutates
+  # the global SDK install. Opt in via per-repo allowlist if needed.
+  - { exe: dotnet, args_regex: '^(build|test|run|publish|pack|clean|format|nuget|new|sln|list|remove|help|--info|--version|--list-sdks|--list-runtimes|--diagnostics)( .*)?$' }
+
+  # ---- JVM build tools (file-driven, no install verb) -----------------
+  # Maven/Gradle don't have a CLI install verb — dependencies live in
+  # `pom.xml` / `build.gradle`. The build commands themselves are
+  # allowlisted; the path-containment check still keeps writes inside
+  # the repo.
+  - { exe: mvn,    args_regex: '.*' }
+  - { exe: mvnw,   args_regex: '.*' }
+  - { exe: gradle, args_regex: '.*' }
+  - { exe: gradlew, args_regex: '.*' }
+
   # ---- Git --------------------------------------------------------------
   # Read-only inspection (deliberately excludes `config`, `remote`,
   # `tag`, `fetch` — those can mutate auth/remote state or interact

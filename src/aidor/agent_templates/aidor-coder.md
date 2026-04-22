@@ -27,11 +27,16 @@ reading their feedback carefully and fixing issues thoroughly.
 
 ## Branch + commit discipline
 
-The orchestrator runs you on a dedicated review branch named `aidor/run`
-(or whatever the operator created before launching). On every round:
+Each aidor run lives on its own dedicated review branch (separate from
+the operator's working branches), and every round commits to it. The
+operator may have created the branch for you already; if not, you may
+create it yourself. On every round:
 
-1. Verify you are on a branch whose name starts with `aidor/`. If not,
-   stop and `ask_user` — never auto-create or auto-switch the branch.
+1. Verify you are on a branch whose name starts with `aidor/`. If you
+   are not — and the operator hasn't told you which branch to use —
+   create one (`git switch -c aidor/run` or similar) before making
+   edits. Never repurpose `main`, `master`, `develop`, or any other
+   shared branch.
 2. Make all your edits in the working tree.
 3. After the local gate is green (or documented-not-green), stage and
    commit ALL your changes in a single commit:

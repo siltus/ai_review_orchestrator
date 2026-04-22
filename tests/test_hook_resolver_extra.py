@@ -555,3 +555,164 @@ def test_pre_tool_use_handles_non_json_string_args_for_powershell(tmp_path: Path
         "toolArgs": "ruff check src tests",
     }
     assert hr._on_pre_tool_use("preToolUse", payload) is None
+
+
+# ---- multi-language install gate ----------------------------------------
+
+
+def test_package_install_allowed_npm_global_denied():
+    ok, reason = hr._package_install_allowed(
+        ["install", "-g", "typescript"],
+        ecosystem="node",
+        allow_local_install=True,
+        install_anchor=True,
+    )
+    assert not ok and "writes outside the repo" in reason
+
+
+def test_package_install_allowed_npm_dev_tool_without_anchor():
+    for pkg in ("vitest", "eslint", "prettier", "typescript"):
+        ok, _ = hr._package_install_allowed(
+            ["install", pkg],
+            ecosystem="node",
+            allow_local_install=True,
+            install_anchor=False,
+        )
+        assert ok, pkg
+
+
+def test_package_install_allowed_npm_runtime_dep_denied_without_anchor():
+    ok, reason = hr._package_install_allowed(
+        ["install", "lodash"],
+        ecosystem="node",
+        allow_local_install=True,
+        install_anchor=False,
+    )
+    assert not ok and "anchor" in reason
+
+
+def test_package_install_allowed_cargo_dev_tool_without_anchor():
+    ok, _ = hr._package_install_allowed(
+        ["install", "cargo-audit"],
+        ecosystem="cargo",
+        allow_local_install=True,
+        install_anchor=False,
+    )
+    assert ok
+
+
+def test_package_install_allowed_cargo_runtime_denied():
+    ok, reason = hr._package_install_allowed(
+        ["install", "ripgrep"],
+        ecosystem="cargo",
+        allow_local_install=True,
+        install_anchor=False,
+    )
+    assert not ok and "anchor" in reason
+
+
+def test_package_install_allowed_go_install_dev_tool():
+    ok, _ = hr._package_install_allowed(
+        ["install", "github.com/golangci/golangci-lint/cmd/golangci-lint@latest"],
+        ecosystem="go",
+        allow_local_install=True,
+        install_anchor=False,
+    )
+    assert ok
+
+
+def test_package_install_allowed_dotnet_tool_install_global_denied():
+    ok, reason = hr._package_install_allowed(
+        ["tool", "install", "-g", "dotnet-format"],
+        ecosystem="dotnet",
+        allow_local_install=True,
+        install_anchor=True,
+    )
+    assert not ok and "writes outside the repo" in reason
+
+
+def test_package_install_allowed_dotnet_tool_install_dev_tool_local():
+    ok, _ = hr._package_install_allowed(
+        ["tool", "install", "dotnet-format"],
+        ecosystem="dotnet",
+        allow_local_install=True,
+        install_anchor=False,
+    )
+    assert ok
+
+
+def test_check_shell_allowlist_cargo_install_dev_tool(tmp_path: Path):
+    import os as _os
+
+    _os.environ["AIDOR_ALLOW_LOCAL_INSTALL"] = "1"
+    try:
+        decision = hr._check_shell_allowlist(
+            {"cwd": str(tmp_path)},
+            {"command": "cargo install cargo-nextest"},
+        )
+    finally:
+        _os.environ.pop("AIDOR_ALLOW_LOCAL_INSTALL", None)
+    assert decision is None
+
+
+def test_check_shell_allowlist_cargo_build_with_anchor(tmp_path: Path):
+    (tmp_path / "Cargo.toml").write_text('[package]\nname="x"\n', encoding="utf-8")
+    decision = hr._check_shell_allowlist(
+        {"cwd": str(tmp_path)},
+        {"command": "cargo build --release"},
+    )
+    assert decision is None
+
+
+def test_check_shell_allowlist_npm_test_allowed(tmp_path: Path):
+    decision = hr._check_shell_allowlist(
+        {"cwd": str(tmp_path)},
+        {"command": "npm test"},
+    )
+    assert decision is None
+
+
+def test_check_shell_allowlist_npx_denied(tmp_path: Path):
+    """
+    px is intentionally NOT allowlisted (would bypass the install
+        gate). Operators who need it can opt in via per-repo allowlist."""
+    decision = hr._check_shell_allowlist(
+        {"cwd": str(tmp_path)},
+        {"command": "npx -y create-react-app foo"},
+    )
+    assert decision is not None
+
+
+def test_detect_install_anchor_node(tmp_path: Path):
+    from aidor.guard_profile import detect_install_anchor
+
+    assert not detect_install_anchor(tmp_path, "node")
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    assert detect_install_anchor(tmp_path, "node")
+
+
+def test_detect_install_anchor_dotnet_csproj_glob(tmp_path: Path):
+    from aidor.guard_profile import detect_install_anchor
+
+    assert not detect_install_anchor(tmp_path, "dotnet")
+    (tmp_path / "MyApp.csproj").write_text("<Project/>", encoding="utf-8")
+    assert detect_install_anchor(tmp_path, "dotnet")
+
+
+def test_is_dev_tool_ecosystem_scope():
+    from aidor.guard_profile import is_dev_tool
+
+    # coverage is a Python dev tool; it must NOT authorise a Node
+    # install of a hypothetical package of the same name.
+    assert is_dev_tool("coverage", ecosystem="python")
+    assert not is_dev_tool("coverage", ecosystem="node")
+    # And the ecosystem-less form still accepts it (legacy).
+    assert is_dev_tool("coverage")
+
+
+def test_is_dev_tool_strips_node_at_version():
+    from aidor.guard_profile import is_dev_tool
+
+    assert is_dev_tool("vitest@1.6.0", ecosystem="node")
+    # Scoped names must keep the leading @scope.
+    assert is_dev_tool("@playwright/test", ecosystem="node")
