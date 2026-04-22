@@ -94,13 +94,19 @@ rules:
   - { exe: gotestsum,     args_regex: '.*' }
 
   # ---- .NET / dotnet --------------------------------------------------
-  # Install verbs (`add package`, `tool install`, `restore`) are
-  # intercepted in code. The rest of the SDK is allowlisted here.
-  # `--global` / `-g` on `tool install` are denied inside the gate.
-  - { exe: dotnet, args_regex: '^(add|tool|restore)( .*)?$' }
-  # `workload` is omitted on purpose: `dotnet workload install` mutates
-  # the global SDK install. Opt in via per-repo allowlist if needed.
-  - { exe: dotnet, args_regex: '^(build|test|run|publish|pack|clean|format|nuget|new|sln|list|remove|help|--info|--version|--list-sdks|--list-runtimes|--diagnostics)( .*)?$' }
+  # Install verbs (`add package`, `tool install`, `restore`,
+  # `package add|update`) are intercepted in code. The rest of the SDK
+  # is allowlisted here. `--global` / `-g` on `tool install` are denied
+  # inside the gate.
+  - { exe: dotnet, args_regex: '^(add|tool|restore|package)( .*)?$' }
+  # `dotnet workload install|update|uninstall|repair|restore` mutate
+  # the global SDK install (MSI on Windows, sudo on Linux/macOS) and
+  # are NOT project-local — opt in per-repo if a workload is needed
+  # (MAUI / Blazor WASM AOT / Android / iOS). WPF does NOT need a
+  # workload (base SDK on Windows). The read-only subcommands
+  # (`list`, `search`, `--info`, `--version`) are safe and allowed.
+  - { exe: dotnet, args_regex: '^workload\s+(list|search|--info|--version|--help|-\?|-h)( .*)?$' }
+  - { exe: dotnet, args_regex: '^(build|test|run|publish|pack|clean|format|nuget|new|sln|list|remove|help|husky|csharpier|stryker|reportgenerator|--info|--version|--list-sdks|--list-runtimes|--diagnostics)( .*)?$' }
 
   # ---- JVM build tools (file-driven, no install verb) -----------------
   # Maven/Gradle don't have a CLI install verb — dependencies live in

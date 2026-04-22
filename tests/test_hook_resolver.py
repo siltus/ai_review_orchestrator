@@ -551,6 +551,53 @@ def test_deny_dotnet_workload_install(tmp_path: Path):
     assert _deny_decision(tmp_path, "dotnet workload install android") is not None
 
 
+def test_allow_dotnet_workload_list(tmp_path: Path):
+    # Read-only workload subcommands are safe and explicitly allowlisted —
+    # they're how operators inspect what workloads are installed without
+    # mutating the global SDK.
+    assert _deny_decision(tmp_path, "dotnet workload list") is None
+    assert _deny_decision(tmp_path, "dotnet workload search maui") is None
+
+
+def test_deny_dotnet_workload_update(tmp_path: Path):
+    # Mutating workload subcommands stay denied (they hit MSI on Windows
+    # / sudo on POSIX and write to the SDK install).
+    assert _deny_decision(tmp_path, "dotnet workload update") is not None
+    assert _deny_decision(tmp_path, "dotnet workload uninstall maui") is not None
+    assert _deny_decision(tmp_path, "dotnet workload repair") is not None
+
+
+def test_allow_dotnet_tool_install_husky_without_anchor(tmp_path: Path):
+    # Husky.Net is the de-facto .NET pre-commit framework — it must be
+    # installable without a project anchor, like pytest is for Python.
+    decision = _deny_decision(
+        tmp_path,
+        "dotnet tool install husky",
+        env={"AIDOR_REPO": str(tmp_path), "AIDOR_ALLOW_LOCAL_INSTALL": "1"},
+    )
+    assert decision is None
+
+
+def test_allow_dotnet_package_list_vulnerable(tmp_path: Path):
+    # The .NET 9.0.300+ supply-chain audit form. Read-only — no anchor
+    # required.
+    assert _deny_decision(tmp_path, "dotnet package list --vulnerable") is None
+    assert (
+        _deny_decision(tmp_path, "dotnet package list --vulnerable --include-transitive") is None
+    )
+
+
+def test_deny_dotnet_package_add_without_anchor(tmp_path: Path):
+    # `dotnet package add` is the new install verb — gated like `dotnet
+    # add package`. Without an anchor and not on the dev-tool list, deny.
+    decision = _deny_decision(
+        tmp_path,
+        "dotnet package add Newtonsoft.Json",
+        env={"AIDOR_REPO": str(tmp_path), "AIDOR_ALLOW_LOCAL_INSTALL": "1"},
+    )
+    assert decision is not None
+
+
 def test_deny_copilot_self_management(tmp_path: Path):
     assert _deny_decision(tmp_path, "copilot update") is not None
     assert _deny_decision(tmp_path, "copilot login") is not None

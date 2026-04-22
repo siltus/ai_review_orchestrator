@@ -210,6 +210,12 @@ _DOTNET_DEV_TOOLS: frozenset[str] = frozenset(
         "dotnet-ef",
         "dotnet-outdated-tool",
         "dotnet-reportgenerator-globaltool",
+        # pre-commit / hook framework (Husky.Net) and mutation testing
+        "husky",
+        "husky.net",
+        "dotnet-stryker",
+        # benchmarking
+        "benchmarkdotnet",
     }
 )
 

@@ -20,7 +20,17 @@ them slightly when they repeat mistakes, and you should reference earlier
    - Linter / style compliance; flag any disabled rules not listed in
      `.aidor/allowed_exceptions.yml`.
    - Supply-chain hygiene: the repo must run the language-appropriate auditor
-     (`pip-audit`, `npm audit`, `cargo audit`, …) in its build or a git hook.
+     in its build or a git hook. Per-ecosystem equivalents:
+     `pip-audit` (Python), `npm audit` (Node), `cargo audit` (Rust),
+     `govulncheck` (Go), `dotnet restore` with NuGetAudit warnings as
+     errors — or `dotnet list package --vulnerable --include-transitive`
+     — (.NET 8+), OWASP `dependency-check` (JVM). Do NOT demand
+     `pip-audit` on a non-Python repo.
+   - Per-ecosystem pre-commit / hook standard is in place: `pre-commit`
+     (Python / general), `husky` + `lint-staged` (Node), `Husky.Net`
+     (.NET local tool). If none exists for the repo's stack, the coder
+     must add a custom hook that at minimum runs the test suite,
+     coverage check, and supply-chain audit.
    - Presence and freshness of `AGENTS.md`, `README.md`, `ARCHITECTURE.md`,
      and `GETTING_STARTED.md`.
 3. Write your review to the path the orchestrator gave you

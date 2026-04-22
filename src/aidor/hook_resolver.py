@@ -794,11 +794,12 @@ _INSTALL_GATES: dict[str, dict[str, Any]] = {
     "dotnet": {
         "exes": ("dotnet",),
         # ``dotnet add <pkg>``, ``dotnet tool install <pkg>``,
+        # ``dotnet package add <pkg>`` (.NET 10+ unified syntax),
         # ``dotnet restore`` (anchor-only — has no positional pkg).
-        "install_verbs": ("add", "tool", "restore"),
+        "install_verbs": ("add", "tool", "restore", "package"),
         "unsafe_flags": frozenset({"--global", "-g"}),
         "anchor_hint": "*.csproj / *.sln / global.json",
-        "dev_tool_hint": "xunit, nunit, coverlet.collector, dotnet-format, csharpier, ...",
+        "dev_tool_hint": "xunit, nunit, coverlet.collector, dotnet-format, csharpier, husky, dotnet-stryker, ...",
     },
 }
 
@@ -839,11 +840,9 @@ def _package_install_allowed(
     # ``args[0]`` is the install verb itself; for multi-token verbs
     # like ``dotnet tool install`` the second token is consumed too.
     skip = 1
-    if (
-        ecosystem == "dotnet"
-        and len(args) >= 2
-        and args[0] == "tool"
-        and args[1] in {"install", "update", "restore"}
+    if ecosystem == "dotnet" and len(args) >= 2 and (
+        (args[0] == "tool" and args[1] in {"install", "update", "restore"})
+        or (args[0] == "package" and args[1] in {"add", "update"})
     ):
         skip = 2
     elif ecosystem == "dotnet" and args and args[0] == "restore":
@@ -972,7 +971,21 @@ def _check_shell_allowlist(payload: dict[str, Any], args: dict[str, Any]) -> dic
         if ecosystem is not None:
             verbs: tuple[str, ...] = _INSTALL_GATES[ecosystem]["install_verbs"]
             positional = [t for t in rest if not t.startswith("-")]
-            if positional and positional[0].lower() in verbs:
+            is_install_verb = bool(positional) and positional[0].lower() in verbs
+            # ``dotnet package`` is dual-purpose: ``package add`` /
+            # ``package update`` install, but ``package list`` /
+            # ``package search`` / ``package remove`` are NOT installs
+            # and should fall through to the allowlist (so e.g.
+            # ``dotnet package list --vulnerable`` — the .NET 9.0.300+
+            # supply-chain audit form — works without an anchor).
+            if (
+                is_install_verb
+                and ecosystem == "dotnet"
+                and positional[0].lower() == "package"
+                and (len(positional) < 2 or positional[1].lower() not in {"add", "update"})
+            ):
+                is_install_verb = False
+            if is_install_verb:
                 if ecosystem == "python":
                     install_anchor = python_install_anchor
                 else:

@@ -24,6 +24,7 @@ from rich.prompt import Prompt
 from aidor.bootstrap import bootstrap
 from aidor.config import RunConfig, read_artifact_text
 from aidor.phase import PhaseEvent, PhaseResult, PhaseRunner
+from aidor.preflight import compute_warnings, render_warnings
 from aidor.review_store import FooterParseError, ReviewFooter, ReviewStore, parse_footer
 from aidor.state import (
     PhaseRecord,
@@ -148,6 +149,12 @@ class Orchestrator:
         actions = bootstrap(self.config)
         for a in actions:
             log.info("bootstrap: %s", a)
+
+        # Advisory pre-run warnings (platform mismatch, very large repos).
+        # Non-blocking — operator owns budget and platform selection.
+        rendered = render_warnings(compute_warnings(self.config.repo))
+        if rendered:
+            self.console.print(rendered)
 
         # Load or initialise state.
         if self.config.resume and self.config.state_path.exists():

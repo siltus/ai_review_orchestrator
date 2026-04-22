@@ -59,73 +59,159 @@ create it yourself. On every round:
 
 ## Bootstrapping the local gate
 
-**Always run the gate inside the project's virtualenv, not against
-system Python.** The repo's pre-commit config / `pyproject.toml` pin
-specific tool versions; running ambient interpreters silently uses the
-wrong versions and lets "missing" tools (e.g. `pip-audit`, `pre-commit`,
-`pytest-cov`) fall through to a fake-green result.
+**Always run the gate against the project's own pinned tools, never
+against ambient system installs.** A pre-commit config / `pyproject.toml`
+/ `Cargo.toml` / `package.json` / `*.csproj` pins specific tool
+versions; an ambient interpreter (`C:\Python311\`, the user's global
+`dotnet` SDK, a roaming `node_modules`, ...) silently uses the wrong
+versions and lets "missing" tools fall through to a fake-green result.
 
-Bootstrap order on every round, BEFORE running any gate command:
+Identify the ecosystem from the anchor files at the repo root, then
+follow the matching recipe. Most repos are single-ecosystem; a polyglot
+repo (e.g. a .NET solution with a Python tooling subfolder) needs each
+ecosystem bootstrapped separately.
 
-1. **Locate or create the venv.** A repo's virtualenv usually lives at
-   `.venv/` or `venv/` at the repo root, but the operator may have
-   used another name (`env/`, `.virtualenv/`, ...). Probe in this
-   order and use the first one that has a working interpreter:
+### Python (`pyproject.toml` / `requirements*.txt` / `setup.{cfg,py}`)
+
+1. **Locate or create the venv.** Probe in this order and use the first
+   one that exists with a working interpreter:
    `.venv\Scripts\python.exe`, `venv\Scripts\python.exe`,
    `env\Scripts\python.exe` (Windows) /
    `.venv/bin/python`, `venv/bin/python`, `env/bin/python` (POSIX).
-   - If none exist, create one: `python -m venv .venv` (the guard
-     allows this — `python -m venv` is on the allowlist and writes
-     inside the repo). Default to `.venv` for new venvs.
+   If none exist, create one: `python -m venv .venv`. The guard
+   allows `python -m venv` and writes inside the repo. Default to
+   `.venv` for new venvs.
    - Do NOT use `Activate.ps1` / `source activate` — they need
      compound shell forms (`if { ... }`) that the clause splitter
      rejects, and you cannot rely on env vars persisting across tool
-     calls anyway. Instead, **invoke the venv interpreter directly by
-     full path** every time: `.\<venv>\Scripts\python.exe -m ...` on
-     Windows, `./<venv>/bin/python -m ...` on POSIX, where `<venv>`
-     is whichever folder you found / created above. The examples
-     below use `.venv` for brevity.
-
-2. **Install the dev/gate dependencies into `.venv`.** Find the dev
-   anchor and install ALL of it — not just the runtime
-   `requirements.txt`:
-   - `requirements-dev.txt` (or `-test.txt` / `_dev.txt` /
-     `_test.txt`) → `.\.venv\Scripts\python.exe -m pip install -r
-     requirements-dev.txt`
+     calls. **Invoke the venv interpreter directly by full path** every
+     time: `.\<venv>\Scripts\python.exe -m ...` on Windows,
+     `./<venv>/bin/python -m ...` on POSIX. Examples below use `.venv`.
+2. **Install the dev/gate dependencies into the venv.** Install ALL
+   the dev anchor, not just runtime `requirements.txt`:
+   - `requirements-dev.txt` / `-test.txt` →
+     `.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt`
    - `pyproject.toml` with a `[project.optional-dependencies] dev` /
-     `test` extra → `.\.venv\Scripts\python.exe -m pip install -e
-     ".[dev]"` (or `"[test]"`).
-   - Plain `pyproject.toml` with no extras → `.\.venv\Scripts\python.exe
-     -m pip install -e .` plus the curated tools you need by name
-     (`pytest pytest-cov ruff pre-commit pip-audit`).
-
-3. **Run every gate command via the venv interpreter.** Examples:
+     `test` extra → `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"`
+   - Plain `pyproject.toml` with no extras → `pip install -e .` plus
+     the curated tools by name (`pytest pytest-cov ruff pre-commit
+     pip-audit`).
+3. **Run the gate via the venv interpreter.** Examples:
    `.\.venv\Scripts\python.exe -m ruff check .`,
    `.\.venv\Scripts\python.exe -m pytest --cov=. --cov-fail-under=90`,
    `.\.venv\Scripts\python.exe -m pip_audit -r requirements.txt`,
-   `.\.venv\Scripts\pre-commit.exe run --all-files`. If a gate tool
-   is reported missing, that means step 2 didn't install it — go
-   back and install it; do NOT skip the gate and document it as
-   "missing".
+   `.\.venv\Scripts\pre-commit.exe run --all-files`.
 
-The guard's install gate cooperates with this:
+### .NET (`*.sln` / `*.csproj` / `*.fsproj` / `global.json`)
 
-- `pip install` of common dev/test tools (`pytest`, `ruff`,
-  `pre-commit`, `pip-audit`, `pyright`, `coverage`, `mypy`, ...) is
-  permitted even on a fresh repo without a lockfile.
+1. **Restore the SDK + project deps.** `dotnet restore` reads `*.csproj`
+   and pulls all PackageReference deps into `~/.nuget/packages` and
+   `obj/` (project-local). NuGet's audit (`NuGetAudit`) runs as part
+   of restore and emits warnings `NU1901`-`NU1904` for known
+   vulnerabilities — **`dotnet restore` IS the supply-chain audit**
+   for .NET 8+ repos, no separate tool needed. The explicit CLI form
+   is `dotnet list package --vulnerable --include-transitive` (or
+   `dotnet package list --vulnerable` on .NET 9.0.300+).
+2. **Restore local dotnet tools.** If `.config/dotnet-tools.json`
+   exists, run `dotnet tool restore` — that pulls in repo-pinned
+   tools like Husky.Net (`husky`), `dotnet-format`, `csharpier`,
+   `dotnet-stryker`, `reportgenerator`, etc.
+3. **Run the gate.** `dotnet build --configuration Release
+   --nologo /warnAsError`, then `dotnet test --no-build --nologo
+   --collect:"XPlat Code Coverage" --logger "trx"`. For coverage
+   reports use `reportgenerator -reports:**/coverage.cobertura.xml
+   -targetdir:.aidor/scratch/coverage -reporttypes:TextSummary`.
+   For format / lint: `dotnet format --verify-no-changes` (or
+   `dotnet csharpier --check .` if CSharpier is the chosen
+   formatter).
+4. **Pre-commit hook.** Husky.Net is the standard
+   (`dotnet new tool-manifest && dotnet tool install Husky &&
+   dotnet husky install`). If the repo has no hook framework yet,
+   install Husky.Net and wire a `pre-commit` task that at minimum
+   runs `dotnet build`, `dotnet test`, and `dotnet list package
+   --vulnerable --include-transitive`. Do NOT introduce the Python
+   `pre-commit` framework into a .NET-only repo.
+
+`dotnet workload install` (MAUI, Blazor WASM AOT, Android, iOS, ...)
+is denied by the guard. Workloads modify the global SDK install
+(MSI on Windows, sudo on Linux/macOS) and are NOT project-local —
+the operator owns SDK installation. WPF is part of the base SDK and
+does not need a workload; if a MAUI / Android target genuinely needs
+one, ask the operator via `ask_user`.
+
+### Node.js (`package.json` / `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock`)
+
+1. **Install deps.** `npm ci` (preferred when a lockfile exists) or
+   `npm install`. Use `pnpm install --frozen-lockfile` / `yarn
+   install --frozen-lockfile` when those are the project's package
+   managers.
+2. **Run the gate.** `npm test` (or whatever the `test` script
+   wraps), `npm run lint`, `npm audit --audit-level=high` (the
+   supply-chain audit for npm), `npm run build` if there's a build.
+   Coverage usually goes through `vitest run --coverage` /
+   `jest --coverage` / `nyc`.
+3. **Pre-commit hook.** `husky` (the npm one, separate from
+   Husky.Net) + `lint-staged` is the de-facto standard. Install
+   into `.husky/`, never globally.
+
+### Rust (`Cargo.toml` / `Cargo.lock`)
+
+1. `cargo build --all-targets` and `cargo test --all-targets`. No
+   separate venv — cargo writes to `target/` inside the repo.
+2. Coverage: `cargo llvm-cov --workspace` (preferred) or
+   `cargo tarpaulin --workspace`.
+3. Lint / format: `cargo fmt --check`, `cargo clippy --all-targets
+   --all-features -- -D warnings`.
+4. Supply-chain audit: `cargo audit` (RustSec advisory DB) and/or
+   `cargo deny check`. Both are in the dev-tool allowlist.
+
+### Go (`go.mod` / `go.sum`)
+
+1. `go build ./...` and `go test ./... -race -cover`.
+2. Coverage report: `go test ./... -coverprofile=cover.out` then
+   `go tool cover -func=cover.out`.
+3. Lint: `golangci-lint run ./...` (preferred over `go vet` alone).
+4. Supply-chain audit: `govulncheck ./...` (the official Go
+   vulnerability scanner).
+
+### JVM (`pom.xml` / `build.gradle{,.kts}`)
+
+1. Maven: `mvn -B -ntp verify` (compile + unit tests in one shot).
+   Gradle: `./gradlew build` / `./gradlew test`.
+2. Coverage via JaCoCo: usually wired into `verify` already; report
+   lands at `target/site/jacoco/` (Maven) or
+   `build/reports/jacoco/` (Gradle).
+3. Lint / format: `./gradlew spotlessCheck`, `./gradlew checkstyle`,
+   `mvn spotbugs:check`, `mvn checkstyle:check` — depends on what
+   the repo configured.
+4. Supply-chain audit: OWASP `dependency-check` (`mvn
+   org.owasp:dependency-check-maven:check` or the Gradle
+   equivalent).
+
+### Cross-ecosystem rules
+
+The guard's install gate cooperates with all of the above:
+
+- `pip install` / `npm install|i|add|ci` / `dotnet add`/`tool` /
+  `cargo install`/`add` / `go install`/`get` of common dev/test
+  tools is permitted even on a fresh repo (per-ecosystem allowlist:
+  pytest, ruff, pre-commit, pip-audit / vitest, eslint, prettier,
+  typescript / xunit, nunit, coverlet.collector, dotnet-format,
+  csharpier, husky, husky.net, dotnet-stryker / cargo-audit,
+  cargo-nextest / golangci-lint, govulncheck, ...).
 - Any project dependency anchor (`pyproject.toml`,
-  `setup.{cfg,py}`, `requirements*.txt`, `poetry.lock`, `uv.lock`,
-  `Pipfile.lock`) authorises `pip install -e .` and `pip install -r
-  <file>` against that anchor.
-- `--user`, `--target`, `--prefix`, `--root` are always denied — they
-  write outside the project tree. Mixing a dev tool with a non-dev
-  package in one command is also denied (no smuggling).
-
-If a non-Python toolchain is needed (`npm`, `dotnet`, `cargo`, `gradle`,
-`go`), the install commands follow the same anchor pattern: a manifest
-or lockfile (`package.json`, `*.csproj`, `Cargo.toml`,
-`build.gradle`, `go.mod`) authorises project-scoped installs; bare
-`npm install -g`, `cargo install <runtime-crate>` etc. are denied.
+  `requirements*.txt`, `package.json`, `*.csproj`, `*.sln`,
+  `Cargo.toml`, `go.mod`, ...) authorises project-scoped installs
+  of arbitrary deps against that anchor.
+- Globally-scoped installs are always denied: `pip install --user|
+  --target|--prefix|--root`, `npm install -g`, `yarn global add`,
+  `cargo install --root`, `dotnet tool install -g`, `dotnet
+  workload install`, `dotnet workload update`. These all write
+  outside the project tree.
+- Gate tools you actually use must be installed by you in step 1/2.
+  If a gate tool is reported missing, that means an earlier step
+  didn't install it — go back and install it; do NOT skip the gate
+  and document it as "missing".
 
 ## Shell-clause hygiene
 
