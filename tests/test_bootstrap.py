@@ -239,18 +239,39 @@ def test_teardown_is_idempotent(run_config):
     assert teardown(run_config) == []
 
 
+def test_teardown_removes_agent_instructions(run_config):
+    """Agent template files (``.github/agents/aidor-*.md``) must be
+    removed by ``teardown``. Copilot picks them up automatically in
+    follow-up interactive sessions in the same repo, so leaving them
+    behind makes manual sessions inherit aidor's contract whether the
+    operator wants it or not."""
+    from aidor.bootstrap import teardown
+
+    bootstrap(run_config)
+    coder = run_config.repo / ".github" / "agents" / "aidor-coder.md"
+    reviewer = run_config.repo / ".github" / "agents" / "aidor-reviewer.md"
+    assert coder.exists()
+    assert reviewer.exists()
+
+    actions = teardown(run_config)
+    assert not coder.exists()
+    assert not reviewer.exists()
+    assert any("aidor-coder.md" in a for a in actions)
+    assert any("aidor-reviewer.md" in a for a in actions)
+    # Empty agents dir is also cleaned up.
+    assert not coder.parent.exists()
+
+
 def test_teardown_keeps_passive_artefacts(run_config):
-    """``teardown`` only removes the active enforcement file. Passive
-    docs (AGENTS.md, agent templates) and run artefacts (.aidor/) stay
-    so the operator can inspect them after the run."""
+    """``teardown`` removes Copilot-facing files only. ``AGENTS.md``
+    (mixed managed-block + operator-edited content) and run artefacts
+    (``.aidor/``) stay so the operator can inspect them after the run."""
     from aidor.bootstrap import teardown
 
     bootstrap(run_config)
     teardown(run_config)
     repo = run_config.repo
     assert (repo / "AGENTS.md").exists()
-    assert (repo / ".github" / "agents" / "aidor-coder.md").exists()
-    assert (repo / ".github" / "agents" / "aidor-reviewer.md").exists()
     assert run_config.aidor_dir.exists()
 
 
@@ -267,3 +288,22 @@ def test_teardown_preserves_unrelated_hook_files(run_config, tmp_path: Path):
     teardown(run_config)
     assert not (run_config.repo / ".github" / "hooks" / "aidor.json").exists()
     assert other.exists()
+
+
+def test_teardown_preserves_unrelated_agent_files(run_config):
+    """If an operator has placed unrelated agent definitions alongside
+    ours in ``.github/agents/``, ``teardown`` must remove only the
+    ``aidor-*.md`` pair and leave the directory in place."""
+    from aidor.bootstrap import teardown
+
+    bootstrap(run_config)
+    other = run_config.repo / ".github" / "agents" / "my-custom-agent.md"
+    other.write_text("# my agent\n", encoding="utf-8")
+
+    teardown(run_config)
+    repo = run_config.repo
+    assert not (repo / ".github" / "agents" / "aidor-coder.md").exists()
+    assert not (repo / ".github" / "agents" / "aidor-reviewer.md").exists()
+    assert other.exists()
+    # Directory must survive because it still has an unrelated file.
+    assert (repo / ".github" / "agents").exists()

@@ -193,46 +193,72 @@ def bootstrap(config: RunConfig) -> list[str]:
 
 
 def teardown(config: RunConfig) -> list[str]:
-    """Reverse the parts of ``bootstrap`` that actively constrain Copilot
-    after the orchestrator exits.
+    """Reverse the parts of ``bootstrap`` that constrain or instruct
+    Copilot after the orchestrator exits.
 
-    Specifically: remove ``.github/hooks/aidor.json`` so a follow-up
-    interactive ``copilot`` session in the same repo is no longer routed
-    through ``aidor.hook_resolver`` (which would deny perfectly normal
-    operator commands like ``Get-Content D:\\TEMP\\copilot-tool-output-*.txt``
-    because the path is outside the repo root).
+    Thin wrapper around :func:`teardown_repo` for the orchestrator's
+    ``finally`` block; ``aidor clean`` calls :func:`teardown_repo`
+    directly with a bare ``repo`` path so it doesn't need to construct
+    a full ``RunConfig`` for a destructive housekeeping command.
+    """
+    return teardown_repo(config.repo)
 
-    Also removes the empty ``.github/hooks/`` directory if nothing else
-    is in it, but never touches:
 
-    * ``.aidor/``                — run artefacts the operator wants to keep
-    * ``.github/agents/*.md``    — agent docs (passive; do nothing on their
-                                   own without the hook file)
-    * ``AGENTS.md``              — passive contract document
-    * ``.gitignore``             — entries are harmless when the files are
-                                   gone
+def teardown_repo(repo: Path) -> list[str]:
+    """Remove every file ``bootstrap`` writes outside ``.aidor/``.
+
+    Removes:
+
+    * ``.github/hooks/aidor.json`` — the active enforcement hook. Left
+      behind, it routes follow-up interactive ``copilot`` sessions in
+      the same repo through ``aidor.hook_resolver`` and denies normal
+      operator commands like ``Get-Content D:\\TEMP\\copilot-tool-output-*.txt``
+      because the path is outside the repo root.
+    * ``.github/agents/aidor-coder.md`` and ``aidor-reviewer.md`` —
+      operational instructions Copilot picks up automatically when the
+      operator opens a follow-up interactive session in the repo. They
+      shape the model's behaviour even though they don't *enforce*
+      anything, so an aidor-driven run leaving them behind makes
+      manual sessions inherit aidor's contract whether the operator
+      wants it or not.
+    * ``.github/hooks/`` and ``.github/agents/`` directories if empty
+      after the removals (preserves unrelated files an operator may
+      have placed alongside ours).
+
+    Never touches:
+
+    * ``.aidor/``      — run artefacts the operator wants to keep
+    * ``AGENTS.md``    — passive contract document; the human-edited
+                         portions outside the managed block are theirs
+    * ``.gitignore``   — entries are harmless when the files are gone
 
     Idempotent: missing files are silently skipped. Returns a list of
     human-readable actions performed (empty if nothing was removed).
     """
     actions: list[str] = []
-    repo = config.repo
-    hooks_path = repo / ".github" / "hooks" / "aidor.json"
-    if hooks_path.exists():
+    targets = (
+        repo / ".github" / "hooks" / "aidor.json",
+        repo / ".github" / "agents" / "aidor-coder.md",
+        repo / ".github" / "agents" / "aidor-reviewer.md",
+    )
+    parent_dirs: set[Path] = set()
+    for target in targets:
+        if target.exists():
+            try:
+                target.unlink()
+                actions.append(f"removed {target.relative_to(repo).as_posix()}")
+                parent_dirs.add(target.parent)
+            except OSError:  # pragma: no cover - defensive
+                pass
+    for parent in parent_dirs:
         try:
-            hooks_path.unlink()
-            actions.append(f"removed {hooks_path.relative_to(repo).as_posix()}")
-        except OSError:  # pragma: no cover - defensive
-            pass
-        hooks_dir = hooks_path.parent
-        try:
-            # Only rmdir if empty; preserves any unrelated hook files an
+            # Only rmdir if empty; preserves any unrelated files an
             # operator may have placed alongside ours.
-            next(hooks_dir.iterdir())
+            next(parent.iterdir())
         except StopIteration:
             try:
-                hooks_dir.rmdir()
-                actions.append(f"removed empty {hooks_dir.relative_to(repo).as_posix()}/")
+                parent.rmdir()
+                actions.append(f"removed empty {parent.relative_to(repo).as_posix()}/")
             except OSError:  # pragma: no cover - defensive
                 pass
         except OSError:  # pragma: no cover - defensive

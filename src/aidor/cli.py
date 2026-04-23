@@ -199,19 +199,29 @@ def clean(
     repo: Path = typer.Option(Path.cwd(), "--repo", resolve_path=True),
     yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation."),
 ) -> None:
-    """Delete the .aidor/ directory and the active hook config.
+    """Delete the .aidor/ directory and all bootstrap-installed files.
 
     Removes:
       * ``.aidor/`` (run artefacts)
       * ``.github/hooks/aidor.json`` (the active enforcement hook — left
         behind it would constrain follow-up interactive ``copilot``
         sessions in the same repo)
+      * ``.github/agents/aidor-coder.md`` and ``.github/agents/aidor-reviewer.md``
+        (operational agent instructions — Copilot picks them up
+        automatically in interactive sessions even after the run ends)
 
-    Keeps ``AGENTS.md`` and ``.github/agents/*.md`` (passive docs).
+    Keeps ``AGENTS.md`` (it has a managed block but also operator-edited
+    sections outside it).
     """
+    from aidor.bootstrap import teardown_repo
+
     aidor_dir = repo / ".aidor"
     hooks_path = repo / ".github" / "hooks" / "aidor.json"
-    has_anything = aidor_dir.exists() or hooks_path.exists()
+    coder_agent = repo / ".github" / "agents" / "aidor-coder.md"
+    reviewer_agent = repo / ".github" / "agents" / "aidor-reviewer.md"
+    teardown_targets = (hooks_path, coder_agent, reviewer_agent)
+
+    has_anything = aidor_dir.exists() or any(t.exists() for t in teardown_targets)
     if not has_anything:
         console.print("[dim]nothing to clean[/dim]")
         return
@@ -219,24 +229,20 @@ def clean(
         targets = []
         if aidor_dir.exists():
             targets.append(str(aidor_dir))
-        if hooks_path.exists():
-            targets.append(str(hooks_path))
+        for t in teardown_targets:
+            if t.exists():
+                targets.append(str(t))
         if not typer.confirm(f"Delete {', '.join(targets)}?"):
             raise typer.Exit(code=1)
+
     if aidor_dir.exists():
         shutil.rmtree(aidor_dir)
         console.print(f"[green]removed {aidor_dir}[/green]")
-    if hooks_path.exists():
-        hooks_path.unlink()
-        console.print(f"[green]removed {hooks_path}[/green]")
-        hooks_dir = hooks_path.parent
-        try:
-            next(hooks_dir.iterdir())
-        except StopIteration:
-            hooks_dir.rmdir()
-            console.print(f"[green]removed empty {hooks_dir}[/green]")
-        except OSError:
-            pass
+
+    # Reuse teardown_repo() so behaviour stays consistent with the
+    # run-end cleanup (same target list, same empty-dir semantics).
+    for action in teardown_repo(repo):
+        console.print(f"[green]{action}[/green]")
 
 
 # ---- doctor --------------------------------------------------------------

@@ -110,9 +110,12 @@ def test_clean_on_empty_repo_is_noop(tmp_path: Path):
 
 def test_clean_removes_hooks_file_too(tmp_path: Path):
     """``aidor clean`` must remove the active enforcement hook
-    (``.github/hooks/aidor.json``) alongside ``.aidor/``. Leftover hook
-    files were the root cause of post-run interactive copilot sessions
-    seeing "outside the repo" denials on Copilot's own scratch files."""
+    (``.github/hooks/aidor.json``) AND the agent template files
+    (``.github/agents/aidor-*.md``) alongside ``.aidor/``. Leftover
+    hook files were the root cause of post-run interactive copilot
+    sessions seeing "outside the repo" denials on Copilot's own
+    scratch files; leftover agent files keep the operator's manual
+    sessions running under aidor's contract."""
     aidor_dir = tmp_path / ".aidor"
     aidor_dir.mkdir()
     (aidor_dir / "state.json").write_text("{}", encoding="utf-8")
@@ -120,12 +123,21 @@ def test_clean_removes_hooks_file_too(tmp_path: Path):
     hooks_dir.mkdir(parents=True)
     hooks_file = hooks_dir / "aidor.json"
     hooks_file.write_text("{}", encoding="utf-8")
+    agents_dir = tmp_path / ".github" / "agents"
+    agents_dir.mkdir(parents=True)
+    coder = agents_dir / "aidor-coder.md"
+    reviewer = agents_dir / "aidor-reviewer.md"
+    coder.write_text("# coder\n", encoding="utf-8")
+    reviewer.write_text("# reviewer\n", encoding="utf-8")
 
     result = runner.invoke(app, ["clean", "--repo", str(tmp_path), "-y"])
     assert result.exit_code == 0, result.stdout
     assert not aidor_dir.exists()
     assert not hooks_file.exists()
     assert not hooks_dir.exists()  # empty dir cleaned up
+    assert not coder.exists()
+    assert not reviewer.exists()
+    assert not agents_dir.exists()  # empty dir cleaned up
 
 
 def test_clean_removes_only_hooks_file_if_aidor_dir_absent(tmp_path: Path):
@@ -140,6 +152,20 @@ def test_clean_removes_only_hooks_file_if_aidor_dir_absent(tmp_path: Path):
     result = runner.invoke(app, ["clean", "--repo", str(tmp_path), "-y"])
     assert result.exit_code == 0, result.stdout
     assert not hooks_file.exists()
+
+
+def test_clean_removes_only_agent_files_if_other_artefacts_absent(tmp_path: Path):
+    """If only the agent files remain (the hook file was already removed
+    by a prior teardown; ``.aidor/`` was manually deleted), ``aidor
+    clean`` must still pick them up."""
+    agents_dir = tmp_path / ".github" / "agents"
+    agents_dir.mkdir(parents=True)
+    coder = agents_dir / "aidor-coder.md"
+    coder.write_text("# coder\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["clean", "--repo", str(tmp_path), "-y"])
+    assert result.exit_code == 0, result.stdout
+    assert not coder.exists()
 
 
 # ---- corrupted state.json ------------------------------------------------
