@@ -79,6 +79,13 @@ tools:
   - web_search
   - WebSearch
   - fetch
+  # GitHub MCP server's web_search surface. Copilot namespaces MCP
+  # tools as ``<server>/<tool>``; the bare ``web_search`` entry above
+  # does not match. This is the read-only search variant the reviewer
+  # reaches for when checking external CVE references / upstream issue
+  # threads — informational, no repo writes, and observed denied once
+  # in the video-organizer dogfood (orchestrator.log:1009).
+  - github-mcp-server/web_search
 
   # ---- Status / meta / persistence (in-process) ---------------------
   - store_memory

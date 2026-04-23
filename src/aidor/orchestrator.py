@@ -21,7 +21,7 @@ from types import FrameType
 from rich.console import Console
 from rich.prompt import Prompt
 
-from aidor.bootstrap import bootstrap
+from aidor.bootstrap import bootstrap, teardown
 from aidor.config import RunConfig, read_artifact_text
 from aidor.phase import PhaseEvent, PhaseResult, PhaseRunner
 from aidor.preflight import compute_warnings, render_warnings
@@ -207,6 +207,17 @@ class Orchestrator:
                 write_summary_md(self.state, self.config.summary_path)
             except Exception:  # pragma: no cover - defensive
                 log.exception("failed to write summary.md")
+            # Remove the active hook config so a follow-up interactive
+            # `copilot` session in this repo isn't routed through the
+            # aidor guard (which would deny normal operator commands
+            # touching paths outside the repo, e.g. Copilot's own
+            # D:\TEMP\copilot-tool-output-*.txt scratch files). The next
+            # `aidor run` re-bootstraps it.
+            try:
+                for action in teardown(self.config):
+                    log.info("teardown: %s", action)
+            except Exception:  # pragma: no cover - defensive
+                log.exception("teardown failed")
             self.console.print()
             print_summary(self.state, self.console)
             self.console.print(f"[dim]summary: {self.config.summary_path}[/dim]")

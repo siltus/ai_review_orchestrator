@@ -108,6 +108,40 @@ def test_clean_on_empty_repo_is_noop(tmp_path: Path):
     assert "nothing to clean" in result.stdout
 
 
+def test_clean_removes_hooks_file_too(tmp_path: Path):
+    """``aidor clean`` must remove the active enforcement hook
+    (``.github/hooks/aidor.json``) alongside ``.aidor/``. Leftover hook
+    files were the root cause of post-run interactive copilot sessions
+    seeing "outside the repo" denials on Copilot's own scratch files."""
+    aidor_dir = tmp_path / ".aidor"
+    aidor_dir.mkdir()
+    (aidor_dir / "state.json").write_text("{}", encoding="utf-8")
+    hooks_dir = tmp_path / ".github" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    hooks_file = hooks_dir / "aidor.json"
+    hooks_file.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(app, ["clean", "--repo", str(tmp_path), "-y"])
+    assert result.exit_code == 0, result.stdout
+    assert not aidor_dir.exists()
+    assert not hooks_file.exists()
+    assert not hooks_dir.exists()  # empty dir cleaned up
+
+
+def test_clean_removes_only_hooks_file_if_aidor_dir_absent(tmp_path: Path):
+    """If only the hook file remains (e.g. operator already manually
+    deleted ``.aidor/``), ``aidor clean`` must still remove it instead
+    of reporting "nothing to clean"."""
+    hooks_dir = tmp_path / ".github" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    hooks_file = hooks_dir / "aidor.json"
+    hooks_file.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(app, ["clean", "--repo", str(tmp_path), "-y"])
+    assert result.exit_code == 0, result.stdout
+    assert not hooks_file.exists()
+
+
 # ---- corrupted state.json ------------------------------------------------
 
 

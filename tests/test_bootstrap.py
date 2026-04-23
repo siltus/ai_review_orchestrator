@@ -201,3 +201,69 @@ def test_bootstrap_seeds_documented_ruff_exceptions(run_config):
     for e in entries:
         assert e.get("reason"), f"entry {e!r} is missing a reason"
         assert e.get("linter"), f"entry {e!r} is missing a linter"
+
+
+# ---- teardown -------------------------------------------------------------
+
+
+def test_teardown_removes_hooks_file(run_config):
+    """After ``bootstrap`` writes the hook file, ``teardown`` must remove
+    it so a follow-up interactive ``copilot`` session in the same repo is
+    no longer routed through the aidor guard. This was the root cause of
+    operators seeing "outside the repo" denials on Copilot's own
+    ``D:/TEMP/copilot-tool-output-*.txt`` scratch files after an aidor
+    run finished."""
+    from aidor.bootstrap import teardown
+
+    bootstrap(run_config)
+    hooks_path = run_config.repo / ".github" / "hooks" / "aidor.json"
+    assert hooks_path.exists()
+
+    actions = teardown(run_config)
+    assert any("aidor.json" in a for a in actions)
+    assert not hooks_path.exists()
+    # Empty hooks dir is also removed (no other hook files there).
+    assert not hooks_path.parent.exists()
+
+
+def test_teardown_is_idempotent(run_config):
+    """Calling ``teardown`` twice (or on a never-bootstrapped repo) must
+    not raise. The orchestrator's ``finally`` block runs unconditionally
+    and may execute when bootstrap was skipped."""
+    from aidor.bootstrap import teardown
+
+    assert teardown(run_config) == []
+    bootstrap(run_config)
+    teardown(run_config)
+    # Second call: no-op, no exception.
+    assert teardown(run_config) == []
+
+
+def test_teardown_keeps_passive_artefacts(run_config):
+    """``teardown`` only removes the active enforcement file. Passive
+    docs (AGENTS.md, agent templates) and run artefacts (.aidor/) stay
+    so the operator can inspect them after the run."""
+    from aidor.bootstrap import teardown
+
+    bootstrap(run_config)
+    teardown(run_config)
+    repo = run_config.repo
+    assert (repo / "AGENTS.md").exists()
+    assert (repo / ".github" / "agents" / "aidor-coder.md").exists()
+    assert (repo / ".github" / "agents" / "aidor-reviewer.md").exists()
+    assert run_config.aidor_dir.exists()
+
+
+def test_teardown_preserves_unrelated_hook_files(run_config, tmp_path: Path):
+    """If an operator has placed unrelated files alongside ``aidor.json``
+    in ``.github/hooks/``, ``teardown`` must remove only ``aidor.json``
+    and leave the directory in place."""
+    from aidor.bootstrap import teardown
+
+    bootstrap(run_config)
+    other = run_config.repo / ".github" / "hooks" / "other-hook.json"
+    other.write_text("{}", encoding="utf-8")
+
+    teardown(run_config)
+    assert not (run_config.repo / ".github" / "hooks" / "aidor.json").exists()
+    assert other.exists()
