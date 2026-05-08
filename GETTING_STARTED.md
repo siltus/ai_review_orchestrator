@@ -85,6 +85,10 @@ Useful flags:
 | `--no-keep-awake`          | (off)  | Don't take a wake-lock. |
 | `--resume`                 | off    | Pick up from existing `.aidor/state.json`. |
 | `--copilot-binary PATH`    | `copilot` | Override the Copilot CLI binary (rarely needed). |
+| `--instructions TEXT`      | (none) | Extra free-form instructions injected into BOTH reviewer and coder prompts every round (e.g. `"extra effort on security"`, `"make sure it's cross-platform"`). |
+| `--instructions-file PATH` | (none) | Same as `--instructions`, but read from a UTF-8 file. Mutually exclusive with `--instructions`. |
+| `--reviewer-instructions TEXT` / `--reviewer-instructions-file PATH` | (none) | Extra instructions appended to the reviewer prompt only (additive on top of `--instructions`). |
+| `--coder-instructions TEXT` / `--coder-instructions-file PATH`       | (none) | Extra instructions appended to the coder prompt only (additive on top of `--instructions`). |
 
 While running:
 

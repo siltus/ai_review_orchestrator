@@ -84,7 +84,7 @@ Your task:
 3. Do NOT modify source files. Reviews only.
 
 When the review file is fully written, end your turn.
-"""
+{extra_instructions_block}"""
 
 REVIEW_PROMPT_FOLLOWUP = """\
 You are running as the aidor-reviewer agent for round {round_index}.
@@ -99,7 +99,7 @@ Review the NEW state of the repository and produce the next review at
   3. New issues visible now.
 
 Do NOT modify source files. End your turn when the review file is written.
-"""
+{extra_instructions_block}"""
 
 FIX_PROMPT = """\
 You are running as the aidor-coder agent for round {round_index}.
@@ -112,7 +112,7 @@ use `ask_user` — the orchestrator will respond.
 
 When your fixes are complete, write a summary of what you did at
 {fixes_path} and end your turn.
-"""
+{extra_instructions_block}"""
 
 READINESS_PROMPT = """\
 You are running as the aidor-reviewer agent — FINAL READINESS GATE.
@@ -124,7 +124,31 @@ smells, and whether AGENTS.md acceptance criteria are met.
 Write the final review at {review_path} with the AIDOR footer.
 If clean AND production-ready, emit PRODUCTION_READY=true.
 Do NOT modify source files. End your turn when written.
-"""
+{extra_instructions_block}"""
+
+
+# -- Prompt assembly helpers ---------------------------------------------------
+
+
+def _format_extra_instructions(text: str) -> str:
+    """Render the operator's extra-instructions block for a prompt.
+
+    Returns the empty string when ``text`` is empty / whitespace-only so the
+    prompt remains unchanged for runs that did not pass any instructions.
+    Otherwise yields a clearly-labelled block, separated by a blank line so
+    it does not run on the line that ended the base template.
+    """
+    body = (text or "").strip()
+    if not body:
+        return ""
+    return (
+        "\n## Operator instructions (apply to this run)\n\n"
+        "The operator has provided the following extra instructions for this\n"
+        "run. They apply IN ADDITION TO AGENTS.md and your default contract;\n"
+        "they do not override safety rules, the AIDOR footer requirement, or\n"
+        "the guard-enforced sandbox.\n\n"
+        f"{body}\n"
+    )
 
 
 # -- Orchestrator --------------------------------------------------------------
@@ -322,7 +346,12 @@ class Orchestrator:
                 if gate_phase.status != "done":
                     gate_path = self.review_store.next_review_path()
                     gate_phase.artifact_path = str(gate_path)
-                    prompt = READINESS_PROMPT.format(review_path=gate_path)
+                    prompt = READINESS_PROMPT.format(
+                        review_path=gate_path,
+                        extra_instructions_block=_format_extra_instructions(
+                            self.config.instructions_for("reviewer")
+                        ),
+                    )
                     result = await self._run_phase(
                         role="reviewer",
                         agent=REVIEWER_AGENT,
@@ -417,6 +446,9 @@ class Orchestrator:
                     round_index=round_index,
                     review_path=review_path,
                     fixes_path=fixes_path,
+                    extra_instructions_block=_format_extra_instructions(
+                        self.config.instructions_for("coder")
+                    ),
                 )
                 result = await self._run_phase(
                     role="coder",
@@ -633,11 +665,13 @@ class Orchestrator:
     # ---- Utilities ----------------------------------------------------------
 
     def _review_prompt(self, *, round_index: int, review_path: Path) -> str:
+        extra_block = _format_extra_instructions(self.config.instructions_for("reviewer"))
         if round_index == 1:
             return REVIEW_PROMPT_INITIAL.format(
                 round_index=round_index,
                 repo=self.config.repo,
                 review_path=review_path,
+                extra_instructions_block=extra_block,
             )
         # Follow-up: resolve previous artefacts. If the previous round ran a
         # readiness gate (because the initial review was clean but the gate
@@ -661,6 +695,7 @@ class Orchestrator:
             prev_review_path=prev_review,
             prev_fixes_path=prev_fixes,
             review_path=review_path,
+            extra_instructions_block=extra_block,
         )
 
     def _save_state(self) -> None:

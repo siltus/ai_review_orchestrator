@@ -70,6 +70,18 @@ class RunConfig:
     # Path to the `copilot` binary. Overridable for testing with a fake.
     copilot_binary: str = "copilot"
 
+    # Optional free-form instructions injected into every reviewer / coder
+    # prompt for the duration of the run. The orchestrator surfaces them to
+    # the agent as a clearly-labelled block. Three slots:
+    #   * extra_instructions          — applied to BOTH roles.
+    #   * reviewer_extra_instructions — appended for the reviewer only.
+    #   * coder_extra_instructions    — appended for the coder only.
+    # Per-role text is *additive* on top of the shared text (see
+    # ``instructions_for``). Empty strings mean "no extra instructions".
+    extra_instructions: str = ""
+    reviewer_extra_instructions: str = ""
+    coder_extra_instructions: str = ""
+
     extra: dict[str, Any] = field(default_factory=dict[str, Any])
 
     # ---- Derived paths (all inside the repo) -------------------------------
@@ -124,6 +136,28 @@ class RunConfig:
         if role == "reviewer":
             return self.reviewer_model
         raise ValueError(f"Unknown role: {role!r}")
+
+    def instructions_for(self, role: str) -> str:
+        """Return the effective extra-instructions text for ``role``.
+
+        Composed as ``extra_instructions`` (applies to both roles) followed by
+        the role-specific override (``reviewer_extra_instructions`` /
+        ``coder_extra_instructions``), separated by a blank line. Returns an
+        empty string when neither slot is set, which the orchestrator uses as
+        the signal to skip the instructions block in the prompt entirely.
+        """
+        if role == "coder":
+            role_specific = self.coder_extra_instructions
+        elif role == "reviewer":
+            role_specific = self.reviewer_extra_instructions
+        else:
+            raise ValueError(f"Unknown role: {role!r}")
+
+        shared = (self.extra_instructions or "").strip()
+        per_role = (role_specific or "").strip()
+        if shared and per_role:
+            return f"{shared}\n\n{per_role}"
+        return shared or per_role
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

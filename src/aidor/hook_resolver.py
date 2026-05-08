@@ -913,9 +913,13 @@ def _package_install_allowed(
     # ``args[0]`` is the install verb itself; for multi-token verbs
     # like ``dotnet tool install`` the second token is consumed too.
     skip = 1
-    if ecosystem == "dotnet" and len(args) >= 2 and (
-        (args[0] == "tool" and args[1] in {"install", "update", "restore"})
-        or (args[0] == "package" and args[1] in {"add", "update"})
+    if (
+        ecosystem == "dotnet"
+        and len(args) >= 2
+        and (
+            (args[0] == "tool" and args[1] in {"install", "update", "restore"})
+            or (args[0] == "package" and args[1] in {"add", "update"})
+        )
     ):
         skip = 2
     elif ecosystem == "dotnet" and args and args[0] == "restore":

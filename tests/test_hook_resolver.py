@@ -582,9 +582,7 @@ def test_allow_dotnet_package_list_vulnerable(tmp_path: Path):
     # The .NET 9.0.300+ supply-chain audit form. Read-only — no anchor
     # required.
     assert _deny_decision(tmp_path, "dotnet package list --vulnerable") is None
-    assert (
-        _deny_decision(tmp_path, "dotnet package list --vulnerable --include-transitive") is None
-    )
+    assert _deny_decision(tmp_path, "dotnet package list --vulnerable --include-transitive") is None
 
 
 def test_deny_dotnet_package_add_without_anchor(tmp_path: Path):
@@ -1103,7 +1101,6 @@ def test_allow_aidor_summary(tmp_path: Path):
 # ---- video-organizer dogfood regressions (path scanner false positives) ----
 
 
-
 def test_looks_like_path_skips_powershell_heredoc_body(tmp_path: Path):
     """The reviewer's `Set-Content -Path X -Value @'<markdown body>'@`
     here-string body shlex-tokenises into one long string containing
@@ -1221,26 +1218,14 @@ def test_apply_patch_allowed_for_in_repo_paths(tmp_path: Path):
 
 
 def test_apply_patch_blocked_for_absolute_path_outside_repo(tmp_path: Path):
-    body = (
-        "*** Begin Patch\n"
-        "*** Add File: C:\\Users\\x\\secret.txt\n"
-        "+pwn\n"
-        "*** End Patch\n"
-    )
+    body = "*** Begin Patch\n*** Add File: C:\\Users\\x\\secret.txt\n+pwn\n*** End Patch\n"
     decision = _apply_patch_decision(tmp_path, body)
     assert decision is not None
     assert "outside the repo" in decision["permissionDecisionReason"]
 
 
 def test_apply_patch_blocked_for_traversal_path(tmp_path: Path):
-    body = (
-        "*** Begin Patch\n"
-        "*** Update File: ../../etc/passwd\n"
-        "@@\n"
-        "-old\n"
-        "+new\n"
-        "*** End Patch\n"
-    )
+    body = "*** Begin Patch\n*** Update File: ../../etc/passwd\n@@\n-old\n+new\n*** End Patch\n"
     decision = _apply_patch_decision(tmp_path, body)
     assert decision is not None
 

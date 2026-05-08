@@ -65,6 +65,25 @@ aidor doctor
 aidor run --coder <copilot-model-id> --reviewer <copilot-model-id>
 ```
 
+Optionally steer the run with extra instructions injected into every
+reviewer and coder prompt — useful for things like "make sure the code
+implements X features", "extra effort on security", or "make sure it's
+cross-platform":
+
+```
+aidor run --coder <id> --reviewer <id> \
+    --instructions "extra effort on security; make sure it's cross-platform"
+
+# or load from a file:
+aidor run --coder <id> --reviewer <id> \
+    --instructions-file ./run-notes.md
+
+# per-role overrides (additive on top of --instructions):
+aidor run --coder <id> --reviewer <id> \
+    --reviewer-instructions "be especially strict about API stability" \
+    --coder-instructions "prefer minimal patches; do not refactor"
+```
+
 See [plan.md](plan.md) for design details.
 
 ## Commands

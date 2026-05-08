@@ -25,7 +25,9 @@ _LARGE_REPO_BYTES = 100 * 1024 * 1024  # 100 MiB of tracked source
 # advisory check; we don't need a real XML parser.
 _USE_WPF_RE = re.compile(r"<UseWPF>\s*true\s*</UseWPF>", re.IGNORECASE)
 _USE_WINFORMS_RE = re.compile(r"<UseWindowsForms>\s*true\s*</UseWindowsForms>", re.IGNORECASE)
-_TFM_WINDOWS_RE = re.compile(r"<TargetFramework[s]?>[^<]*-windows[\d.]*[^<]*</TargetFramework[s]?>", re.IGNORECASE)
+_TFM_WINDOWS_RE = re.compile(
+    r"<TargetFramework[s]?>[^<]*-windows[\d.]*[^<]*</TargetFramework[s]?>", re.IGNORECASE
+)
 
 
 def compute_warnings(repo: Path, *, host_system: str | None = None) -> list[str]:
@@ -65,11 +67,7 @@ def _windows_only_csprojs(repo: Path) -> list[Path]:
     if not repo.exists():
         return hits
     try:
-        candidates = [
-            p
-            for p in repo.rglob("*.csproj")
-            if not _is_under_excluded(p, repo)
-        ]
+        candidates = [p for p in repo.rglob("*.csproj") if not _is_under_excluded(p, repo)]
     except OSError:
         return hits
     for csproj in candidates:
@@ -77,7 +75,11 @@ def _windows_only_csprojs(repo: Path) -> list[Path]:
             text = csproj.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if _USE_WPF_RE.search(text) or _USE_WINFORMS_RE.search(text) or _TFM_WINDOWS_RE.search(text):
+        if (
+            _USE_WPF_RE.search(text)
+            or _USE_WINFORMS_RE.search(text)
+            or _TFM_WINDOWS_RE.search(text)
+        ):
             hits.append(csproj)
     return hits
 

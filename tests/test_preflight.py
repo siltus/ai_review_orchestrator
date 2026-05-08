@@ -48,8 +48,7 @@ def test_no_warning_for_wpf_on_windows(tmp_path: Path):
 def test_warns_on_winforms_csproj_on_macos(tmp_path: Path):
     csproj = tmp_path / "Forms.csproj"
     csproj.write_text(
-        "<Project><PropertyGroup><UseWindowsForms>true</UseWindowsForms>"
-        "</PropertyGroup></Project>",
+        "<Project><PropertyGroup><UseWindowsForms>true</UseWindowsForms></PropertyGroup></Project>",
         encoding="utf-8",
     )
     warnings = compute_warnings(tmp_path, host_system="Darwin")

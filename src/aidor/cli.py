@@ -62,6 +62,46 @@ def _load_state_or_exit(state_path: Path) -> State:
         raise typer.Exit(code=2) from exc
 
 
+def _resolve_instructions(
+    inline_flag: str,
+    inline_value: str | None,
+    file_flag: str,
+    file_value: Path | None,
+) -> str:
+    """Resolve an inline-text + file-path option pair into a single string.
+
+    Used by the ``aidor run`` extra-instructions options. Enforces:
+
+    * The two flags are mutually exclusive — supplying both is an operator
+      error and exits with code 2.
+    * The file (if used) must exist and be readable as UTF-8; otherwise we
+      print a clean error and exit with code 2 instead of leaking a
+      traceback.
+
+    Returns an empty string when neither flag is supplied. Inline text is
+    returned as-is (no normalisation here; the orchestrator's prompt
+    formatter handles whitespace).
+    """
+    if inline_value is not None and file_value is not None:
+        console.print(
+            f"[red]{inline_flag} and {file_flag} are mutually exclusive — "
+            "pass one or the other, not both[/red]"
+        )
+        raise typer.Exit(code=2)
+    if inline_value is not None:
+        return inline_value
+    if file_value is not None:
+        if not file_value.is_file():
+            console.print(f"[red]{file_flag}: {file_value} is not a readable file[/red]")
+            raise typer.Exit(code=2)
+        try:
+            return file_value.read_text(encoding="utf-8")
+        except OSError as exc:
+            console.print(f"[red]{file_flag}: could not read {file_value}: {exc}[/red]")
+            raise typer.Exit(code=2) from exc
+    return ""
+
+
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"aidor {__version__}")
@@ -110,8 +150,81 @@ def run(
     copilot_binary: str = typer.Option(
         "copilot", "--copilot-binary", help="Path to copilot binary."
     ),
+    instructions: str | None = typer.Option(
+        None,
+        "--instructions",
+        help=(
+            "Inline extra instructions injected into BOTH reviewer and coder "
+            "prompts (e.g. 'extra effort on security'). Mutually exclusive "
+            "with --instructions-file."
+        ),
+    ),
+    instructions_file: Path | None = typer.Option(
+        None,
+        "--instructions-file",
+        help=(
+            "Path to a UTF-8 file whose contents are injected into BOTH "
+            "reviewer and coder prompts. Mutually exclusive with --instructions."
+        ),
+        exists=False,  # explicit error below for friendlier message
+        resolve_path=True,
+    ),
+    reviewer_instructions: str | None = typer.Option(
+        None,
+        "--reviewer-instructions",
+        help=(
+            "Inline extra instructions for the reviewer ONLY. Appended to "
+            "--instructions when both are supplied. Mutually exclusive with "
+            "--reviewer-instructions-file."
+        ),
+    ),
+    reviewer_instructions_file: Path | None = typer.Option(
+        None,
+        "--reviewer-instructions-file",
+        help=(
+            "Path to a UTF-8 file whose contents are appended to the reviewer "
+            "prompt only. Mutually exclusive with --reviewer-instructions."
+        ),
+        exists=False,
+        resolve_path=True,
+    ),
+    coder_instructions: str | None = typer.Option(
+        None,
+        "--coder-instructions",
+        help=(
+            "Inline extra instructions for the coder ONLY. Appended to "
+            "--instructions when both are supplied. Mutually exclusive with "
+            "--coder-instructions-file."
+        ),
+    ),
+    coder_instructions_file: Path | None = typer.Option(
+        None,
+        "--coder-instructions-file",
+        help=(
+            "Path to a UTF-8 file whose contents are appended to the coder "
+            "prompt only. Mutually exclusive with --coder-instructions."
+        ),
+        exists=False,
+        resolve_path=True,
+    ),
 ) -> None:
     """Run the full review↔fix loop until convergence, abort, or max rounds."""
+    extra_shared = _resolve_instructions(
+        "--instructions", instructions, "--instructions-file", instructions_file
+    )
+    extra_reviewer = _resolve_instructions(
+        "--reviewer-instructions",
+        reviewer_instructions,
+        "--reviewer-instructions-file",
+        reviewer_instructions_file,
+    )
+    extra_coder = _resolve_instructions(
+        "--coder-instructions",
+        coder_instructions,
+        "--coder-instructions-file",
+        coder_instructions_file,
+    )
+
     config = RunConfig(
         repo=repo,
         coder_model=coder,
@@ -125,6 +238,9 @@ def run(
         resume=resume,
         dry_run=dry_run,
         copilot_binary=copilot_binary,
+        extra_instructions=extra_shared,
+        reviewer_extra_instructions=extra_reviewer,
+        coder_extra_instructions=extra_coder,
     )
     if dry_run:
         actions = bootstrap(config)
