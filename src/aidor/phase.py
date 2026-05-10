@@ -378,6 +378,14 @@ class PhaseRunner:
             f"--share={self.transcript_path}",
             "--no-color",
         ]
+        # Forward Copilot's --reasoning-effort when configured. For Claude
+        # models the effort is encoded into the model id itself
+        # (e.g. ``claude-opus-4.7-xhigh``), but for GPT-family models the
+        # only way to reach ``xhigh`` is through this separate flag — see
+        # GitHub issue #1.
+        effort = cfg.effort_for(self.role)
+        if effort:
+            argv.append(f"--reasoning-effort={effort}")
         if resume:
             argv.append("--continue")
         argv.extend(build_flags(cfg.repo, allow_local_install=cfg.allow_local_install))

@@ -84,6 +84,18 @@ aidor run --coder <id> --reviewer <id> \
     --coder-instructions "prefer minimal patches; do not refactor"
 ```
 
+For GPT-family models, where reasoning effort cannot be encoded into the
+model id (GitHub issue #1), forward Copilot's
+`--reasoning-effort {low,medium,high,xhigh}` flag:
+
+```
+aidor run --coder gpt-5.5 --reviewer gpt-5.5 --effort xhigh
+
+# or per-role (overrides --effort for that role only):
+aidor run --coder gpt-5.5 --reviewer gpt-5.5 \
+    --reviewer-effort xhigh --coder-effort high
+```
+
 See [plan.md](plan.md) for design details.
 
 ## Commands

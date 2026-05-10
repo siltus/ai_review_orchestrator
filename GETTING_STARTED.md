@@ -89,6 +89,8 @@ Useful flags:
 | `--instructions-file PATH` | (none) | Same as `--instructions`, but read from a UTF-8 file. Mutually exclusive with `--instructions`. |
 | `--reviewer-instructions TEXT` / `--reviewer-instructions-file PATH` | (none) | Extra instructions appended to the reviewer prompt only (additive on top of `--instructions`). |
 | `--coder-instructions TEXT` / `--coder-instructions-file PATH`       | (none) | Extra instructions appended to the coder prompt only (additive on top of `--instructions`). |
+| `--effort {low\|medium\|high\|xhigh}` | (Copilot default) | Forwarded to Copilot CLI as `--reasoning-effort=<value>` for BOTH roles. Required for GPT-family models, where `xhigh` is unreachable through the model id alone. |
+| `--reviewer-effort` / `--coder-effort` | (Copilot default) | Per-role override of `--effort`. The role-specific value fully replaces the shared one (Copilot only accepts a single `--reasoning-effort` per invocation). |
 
 While running:
 

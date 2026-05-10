@@ -15,6 +15,13 @@ DEFAULT_MAX_ARTIFACT_MB = 256
 # Restart back-off schedule for `copilot --continue` retries.
 RESTART_BACKOFF_S: tuple[int, ...] = (30, 120, 600)
 
+# Allowed values for Copilot CLI's ``--reasoning-effort`` flag, per
+# `copilot --help` (verified empirically against Copilot CLI 1.0.40+).
+# Used by both ``RunConfig`` validation and the CLI's Typer choice
+# validator so an invalid value fails before a Copilot subprocess is
+# ever spawned.
+EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh")
+
 
 class ArtifactTooLargeError(OSError):
     """Raised when a review/fix artefact exceeds ``RunConfig.max_artifact_mb``.
@@ -82,7 +89,36 @@ class RunConfig:
     reviewer_extra_instructions: str = ""
     coder_extra_instructions: str = ""
 
+    # Optional Copilot ``--reasoning-effort`` override per role. See
+    # https://docs.github.com/en/copilot for the model/effort matrix.
+    # Three slots, role-specific overrides shared (but do NOT compose):
+    #   * effort           — shared default for both roles.
+    #   * reviewer_effort  — overrides ``effort`` for the reviewer.
+    #   * coder_effort     — overrides ``effort`` for the coder.
+    # Empty strings mean "do not pass --reasoning-effort to Copilot" — the
+    # CLI then applies its own per-model default. ``effort_for`` resolves the
+    # effective value at argv-build time.
+    effort: str = ""
+    reviewer_effort: str = ""
+    coder_effort: str = ""
+
     extra: dict[str, Any] = field(default_factory=dict[str, Any])
+
+    def __post_init__(self) -> None:
+        # Validate the effort slots up-front so a typo in operator-supplied
+        # config or a stale repr-loaded snapshot fails fast with a clear
+        # message instead of being passed through to Copilot, which would
+        # respond with a confusing "model not available"-style error.
+        for slot_name, slot_value in (
+            ("effort", self.effort),
+            ("reviewer_effort", self.reviewer_effort),
+            ("coder_effort", self.coder_effort),
+        ):
+            if slot_value and slot_value not in EFFORT_LEVELS:
+                allowed = ", ".join(EFFORT_LEVELS)
+                raise ValueError(
+                    f"RunConfig.{slot_name}={slot_value!r} is not one of {{{allowed}}}"
+                )
 
     # ---- Derived paths (all inside the repo) -------------------------------
 
@@ -158,6 +194,27 @@ class RunConfig:
         if shared and per_role:
             return f"{shared}\n\n{per_role}"
         return shared or per_role
+
+    def effort_for(self, role: str) -> str:
+        """Return the effective Copilot ``--reasoning-effort`` value for ``role``.
+
+        The role-specific override (``reviewer_effort`` / ``coder_effort``)
+        takes precedence over the shared ``effort`` setting. Returns the empty
+        string when neither slot is set, which ``phase.PhaseRunner`` uses as
+        the signal to omit ``--reasoning-effort`` from the Copilot argv
+        entirely (Copilot then applies its own per-model default).
+
+        Unlike ``instructions_for``, the effort levels do NOT compose — only
+        one value can be passed to Copilot per invocation, so the role-specific
+        override fully replaces the shared value when set.
+        """
+        if role == "coder":
+            role_specific = self.coder_effort
+        elif role == "reviewer":
+            role_specific = self.reviewer_effort
+        else:
+            raise ValueError(f"Unknown role: {role!r}")
+        return (role_specific or self.effort or "").strip()
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

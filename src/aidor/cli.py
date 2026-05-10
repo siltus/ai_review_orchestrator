@@ -19,6 +19,7 @@ from aidor.config import (
     DEFAULT_MAX_RESTARTS_PER_ROUND,
     DEFAULT_MAX_ROUNDS,
     DEFAULT_ROUND_TIMEOUT_S,
+    EFFORT_LEVELS,
     RunConfig,
 )
 from aidor.orchestrator import Orchestrator
@@ -100,6 +101,25 @@ def _resolve_instructions(
             console.print(f"[red]{file_flag}: could not read {file_value}: {exc}[/red]")
             raise typer.Exit(code=2) from exc
     return ""
+
+
+def _resolve_effort(flag: str, value: str | None) -> str:
+    """Validate a Copilot reasoning-effort CLI option, returning a normalised
+    lower-cased string (or "" when ``value`` is ``None``).
+
+    Typer does not have a true choice-validator built in for raw ``str``
+    options, and we want a clean operator-facing error rather than a
+    ``ValueError`` traceback when the value is bogus. Validation is centralised
+    here so all three ``--effort`` flag variants share the same behaviour.
+    """
+    if value is None:
+        return ""
+    normalised = value.strip().lower()
+    if normalised and normalised not in EFFORT_LEVELS:
+        allowed = ", ".join(EFFORT_LEVELS)
+        console.print(f"[red]{flag}={value!r} is not one of {{{allowed}}}[/red]")
+        raise typer.Exit(code=2)
+    return normalised
 
 
 def _version_callback(value: bool) -> None:
@@ -207,6 +227,35 @@ def run(
         exists=False,
         resolve_path=True,
     ),
+    effort: str | None = typer.Option(
+        None,
+        "--effort",
+        help=(
+            "Copilot --reasoning-effort applied to BOTH reviewer and coder "
+            f"(one of: {', '.join(EFFORT_LEVELS)}). Useful for GPT-family "
+            "models where xhigh is only reachable via this flag, not via the "
+            "model id (see GitHub issue #1)."
+        ),
+        case_sensitive=False,
+    ),
+    reviewer_effort: str | None = typer.Option(
+        None,
+        "--reviewer-effort",
+        help=(
+            "Copilot --reasoning-effort for the reviewer ONLY (one of: "
+            f"{', '.join(EFFORT_LEVELS)}). Overrides --effort for this role."
+        ),
+        case_sensitive=False,
+    ),
+    coder_effort: str | None = typer.Option(
+        None,
+        "--coder-effort",
+        help=(
+            "Copilot --reasoning-effort for the coder ONLY (one of: "
+            f"{', '.join(EFFORT_LEVELS)}). Overrides --effort for this role."
+        ),
+        case_sensitive=False,
+    ),
 ) -> None:
     """Run the full review↔fix loop until convergence, abort, or max rounds."""
     extra_shared = _resolve_instructions(
@@ -224,6 +273,9 @@ def run(
         "--coder-instructions-file",
         coder_instructions_file,
     )
+    effort_shared = _resolve_effort("--effort", effort)
+    effort_reviewer = _resolve_effort("--reviewer-effort", reviewer_effort)
+    effort_coder = _resolve_effort("--coder-effort", coder_effort)
 
     config = RunConfig(
         repo=repo,
@@ -241,6 +293,9 @@ def run(
         extra_instructions=extra_shared,
         reviewer_extra_instructions=extra_reviewer,
         coder_extra_instructions=extra_coder,
+        effort=effort_shared,
+        reviewer_effort=effort_reviewer,
+        coder_effort=effort_coder,
     )
     if dry_run:
         actions = bootstrap(config)
