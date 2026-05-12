@@ -110,6 +110,12 @@ Address every critical and major issue. Prefer minimal, surgical edits;
 do not refactor unrelated code. When a requirement is genuinely ambiguous,
 use `ask_user` — the orchestrator will respond.
 
+Place each new regression test in the existing test file that already
+covers the module under fix (e.g. a fix to `src/aidor/phase.py` belongs
+in `tests/test_phase.py`). Never create `test_review_NNNN_*.py`,
+`test_round_*.py`, or other round-numbered bucket files — the reviewer
+will flag them as a structural defect.
+
 When your fixes are complete, write a summary of what you did at
 {fixes_path} and end your turn.
 {extra_instructions_block}"""

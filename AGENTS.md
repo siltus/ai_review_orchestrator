@@ -18,7 +18,11 @@ reviewer declares the repo production-ready.
    auditor — `pip-audit`, `pysentry`, `npm audit`, `cargo audit`, etc. — as a
    build step or a git pre-commit hook. If none exists, add one.
 2. **Test coverage.** Line coverage must be ≥ 90 %. Every bugfix must be
-   accompanied by a regression test. No exceptions.
+   accompanied by a regression test. No exceptions. New regression tests
+   must be placed in the existing test file that covers the module/feature
+   under fix (`tests/test_<module>.py`); files of the form
+   `test_review_NNNN_*.py`, `test_round_*.py`, or `test_fixes_*.py` are a
+   structural defect and the reviewer will flag them as **major**.
 3. **Linters / style.** All linters must pass. Rule exclusions require human
    consent; the pre-approved list lives at `.aidor/allowed_exceptions.yml`. Do
    not add ad-hoc suppressions.

@@ -13,7 +13,16 @@ reading their feedback carefully and fixing issues thoroughly.
 1. Read ONLY the newest file in `.aidor/reviews/`. You MAY follow explicit
    references to older reviews, but do not read them otherwise.
 2. Apply all the fixes the reviewer requested. Add a regression test for every
-   bugfix — no exceptions.
+   bugfix — no exceptions. **Place each new test in the file that already
+   covers the module/feature being fixed** (e.g. a fix to
+   `src/aidor/phase.py` belongs in `tests/test_phase.py`; a fix to the CLI
+   belongs in `tests/test_cli.py`). If no such file exists yet, create one
+   named after the module under test (`tests/test_<module>.py`), **not**
+   after the review. Group related tests into a `class Test<Feature>` when
+   a file gets large. **Never create files of the form `test_review_*.py`,
+   `test_round_*.py`, `test_fixes_*.py`, or any other name that ties tests
+   to a round/review number rather than the code under test** — the
+   reviewer will flag any such file as a structural defect.
 3. Run the local quality gate (lint, format, type-check, tests + coverage,
    supply-chain audit) and confirm it is green BEFORE writing the summary.
    If a tool is missing, install it (project-local only — see "Bootstrapping

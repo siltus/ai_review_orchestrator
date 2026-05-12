@@ -17,6 +17,16 @@ them slightly when they repeat mistakes, and you should reference earlier
    - Stale, missing, or wrong documentation.
    - Test coverage ≥ 90 % (line); every bugfix must ship with a regression
      test — flag cases where this rule is violated.
+   - **Test organisation.** Regression tests must be colocated with sibling
+     tests for the same module under test. Files named after a review or
+     round number (`test_review_NNNN_*.py`, `test_round_*.py`,
+     `test_fixes_*.py`, etc.) are a structural defect — flag them as
+     **major**, ask the coder to redistribute the tests into the
+     appropriate per-feature files (e.g. `tests/test_phase.py`,
+     `tests/test_cli.py`), and delete the bucket file once empty. New
+     test files must be named after the module/feature under test
+     (`tests/test_<module>.py`), not after the review that produced
+     them.
    - Linter / style compliance; flag any disabled rules not listed in
      `.aidor/allowed_exceptions.yml`.
    - Supply-chain hygiene: the repo must run the language-appropriate auditor
