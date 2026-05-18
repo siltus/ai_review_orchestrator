@@ -38,6 +38,7 @@ packages = ["src/aidor"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/aidor/agent_templates" = "aidor/agent_templates"
+"src/aidor/resources" = "aidor/resources"
 "src/aidor/policies" = "aidor/policies"
 
 [tool.pytest.ini_options]
@@ -73,9 +74,9 @@ select = [
     "SIM",  # flake8-simplify
 ]
 # Every entry below has a matching human-approved justification in
-# `.aidor/allowed_exceptions.yml` — that file is the source of truth for
-# lint-rule exceptions (see AGENTS.md). Do not add new ignores here without
-# adding a corresponding entry there first.
+# `.aidor/allowed_exceptions.yml` — that file is the runtime source of truth
+# for lint-rule exceptions. Do not add new ignores here without adding a
+# corresponding entry there first.
 ignore = [
     "E501",   # long URLs/strings; the formatter handles code width
     "B008",   # typer uses `typer.Option(...)` in default args by design

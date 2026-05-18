@@ -740,27 +740,27 @@ def clean(
     repo: Path = typer.Option(Path.cwd(), "--repo", resolve_path=True),
     yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation."),
 ) -> None:
-    """Delete the .aidor/ directory and all bootstrap-installed files.
+    """Delete .aidor/ and all bootstrap-installed runtime files.
 
     Removes:
-      * ``.aidor/`` (run artefacts)
+      * temporary runtime ``AGENTS.md`` or restores the project original from
+        ``.github/aidor-backups/``
       * ``.github/hooks/aidor.json`` (the active enforcement hook — left
         behind it would constrain follow-up interactive ``copilot``
         sessions in the same repo)
       * ``.github/agents/aidor-coder.md`` and ``.github/agents/aidor-reviewer.md``
         (operational agent instructions — Copilot picks them up
         automatically in interactive sessions even after the run ends)
-
-    Keeps ``AGENTS.md`` (it has a managed block but also operator-edited
-    sections outside it).
+      * ``.aidor/`` (run artefacts)
     """
-    from aidor.bootstrap import teardown_repo
+    from aidor.bootstrap import AGENTS_BACKUP_DIR, teardown_repo
 
     aidor_dir = repo / ".aidor"
     hooks_path = repo / ".github" / "hooks" / "aidor.json"
     coder_agent = repo / ".github" / "agents" / "aidor-coder.md"
     reviewer_agent = repo / ".github" / "agents" / "aidor-reviewer.md"
-    teardown_targets = (hooks_path, coder_agent, reviewer_agent)
+    backup_dir = repo / AGENTS_BACKUP_DIR
+    teardown_targets = (hooks_path, coder_agent, reviewer_agent, backup_dir)
 
     has_anything = aidor_dir.exists() or any(t.exists() for t in teardown_targets)
     if not has_anything:
@@ -768,22 +768,22 @@ def clean(
         return
     if not yes:
         targets = []
-        if aidor_dir.exists():
-            targets.append(str(aidor_dir))
         for t in teardown_targets:
             if t.exists():
                 targets.append(str(t))
+        if aidor_dir.exists():
+            targets.append(str(aidor_dir))
         if not typer.confirm(f"Delete {', '.join(targets)}?"):
             raise typer.Exit(code=1)
+
+    # Restore/remove runtime files before deleting `.aidor/` so cleanup still
+    # works after interrupted runs and before operators wipe run artefacts.
+    for action in teardown_repo(repo):
+        console.print(f"[green]{action}[/green]")
 
     if aidor_dir.exists():
         shutil.rmtree(aidor_dir)
         console.print(f"[green]removed {aidor_dir}[/green]")
-
-    # Reuse teardown_repo() so behaviour stays consistent with the
-    # run-end cleanup (same target list, same empty-dir semantics).
-    for action in teardown_repo(repo):
-        console.print(f"[green]{action}[/green]")
 
 
 # ---- doctor --------------------------------------------------------------
@@ -842,9 +842,9 @@ def doctor(
             check("copilot --version", False, str(exc))
     check("repo is a directory", repo.is_dir(), str(repo))
     check(
-        "AGENTS.md exists (optional)",
+        "project AGENTS.md exists (optional)",
         (repo / "AGENTS.md").exists(),
-        "will be created by bootstrap",
+        "will be backed up while aidor installs its runtime contract",
         required=False,
     )
     if sys.platform == "linux":

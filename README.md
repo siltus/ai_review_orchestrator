@@ -32,7 +32,8 @@
 Copilot CLI in an automated review↔fix loop. It is a thin supervisor around
 `copilot -p --autopilot --output-format=json` that:
 
-- bootstraps two custom agents + hooks + an `AGENTS.md` managed block;
+- bootstraps two custom agents, hooks, and a temporary runtime `AGENTS.md`
+  copied from `src/aidor/resources/aidor_runtime_agents.md`;
 - runs reviewer and coder phases in alternation until convergence or a
   hard budget is hit;
 - enforces a **deny-by-default Guard** at the Copilot `preToolUse` /
@@ -138,6 +139,10 @@ See [plan.md](plan.md) for design details.
   another phase instead of continuing on stale state.
 - `.aidor/ABORT` is a one-shot marker. A new run clears a stale marker after
   bootstrap and before the first phase starts.
+- `AGENTS.md` is runtime-only: aidor copies
+  `src/aidor/resources/aidor_runtime_agents.md` to the target repo during a
+  run, backs up any project `AGENTS.md` under `.github/aidor-backups/`, and
+  restores or removes it during teardown / `aidor clean`.
 
 ## Layout
 

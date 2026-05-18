@@ -41,8 +41,8 @@ them slightly when they repeat mistakes, and you should reference earlier
      (.NET local tool). If none exists for the repo's stack, the coder
      must add a custom hook that at minimum runs the test suite,
      coverage check, and supply-chain audit.
-   - Presence and freshness of `AGENTS.md`, `README.md`, `ARCHITECTURE.md`,
-     and `GETTING_STARTED.md`.
+   - Compliance with the runtime `AGENTS.md` contract, plus presence and
+     freshness of `README.md`, `ARCHITECTURE.md`, and `GETTING_STARTED.md`.
 3. Write your review to the path the orchestrator gave you
    (`.aidor/reviews/review-NNNN-*.md`) with sections:
    - **Summary** — one paragraph overview.

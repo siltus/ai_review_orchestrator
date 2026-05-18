@@ -3,9 +3,33 @@
 from __future__ import annotations
 
 import json
+from importlib import resources
 from pathlib import Path
 
-from aidor.bootstrap import MANAGED_END, MANAGED_START, bootstrap
+import pytest
+
+from aidor.bootstrap import (
+    AGENTS_BACKUP_DIR,
+    AGENTS_BACKUP_META,
+    AGENTS_BACKUP_ORIGINAL,
+    bootstrap,
+)
+
+
+def _runtime_contract() -> str:
+    return (
+        resources.files("aidor.resources")
+        .joinpath("aidor_runtime_agents.md")
+        .read_text(encoding="utf-8")
+    )
+
+
+def _backup_original(repo: Path) -> Path:
+    return repo / AGENTS_BACKUP_DIR / AGENTS_BACKUP_ORIGINAL
+
+
+def _backup_meta(repo: Path) -> Path:
+    return repo / AGENTS_BACKUP_DIR / AGENTS_BACKUP_META
 
 
 def test_bootstrap_creates_all_artifacts(run_config):
@@ -16,8 +40,9 @@ def test_bootstrap_creates_all_artifacts(run_config):
     assert (repo / ".github" / "agents" / "aidor-coder.md").exists()
     assert (repo / ".github" / "agents" / "aidor-reviewer.md").exists()
     assert (repo / ".github" / "hooks" / "aidor.json").exists()
-    assert (repo / "AGENTS.md").read_text(encoding="utf-8").count(MANAGED_START) == 1
-    assert (repo / "AGENTS.md").read_text(encoding="utf-8").count(MANAGED_END) == 1
+    assert (repo / "AGENTS.md").read_text(encoding="utf-8") == _runtime_contract()
+    assert _backup_original(repo).read_text(encoding="utf-8") == "# project\n\nExisting content.\n"
+    assert json.loads(_backup_meta(repo).read_text(encoding="utf-8")) == {"existed": True}
     assert run_config.aidor_dir.is_dir()
     assert run_config.allowed_exceptions_path.exists()
     assert run_config.config_snapshot_path.exists()
@@ -29,9 +54,9 @@ def test_bootstrap_is_idempotent(run_config):
     bootstrap(run_config)
     second = (run_config.repo / "AGENTS.md").read_text(encoding="utf-8")
     assert first == second
-    # Second call may still re-write the config snapshot, but managed block
-    # must be unchanged.
-    assert first.count(MANAGED_START) == 1
+    assert _backup_original(run_config.repo).read_text(encoding="utf-8") == (
+        "# project\n\nExisting content.\n"
+    )
 
 
 def test_hooks_json_bakes_python_interpreter(run_config):
@@ -58,14 +83,104 @@ def test_hooks_json_bakes_python_interpreter(run_config):
             assert not cmd["bash"].startswith("& ")
 
 
-def test_bootstrap_preserves_existing_agents_md_prefix(run_config):
+def test_bootstrap_replaces_existing_agents_md_with_runtime_contract(run_config):
     agents_md = run_config.repo / "AGENTS.md"
     agents_md.write_text("# project\n\nMy custom section.\n", encoding="utf-8")
     bootstrap(run_config)
-    content = agents_md.read_text(encoding="utf-8")
-    assert "My custom section." in content
-    assert MANAGED_START in content
-    assert MANAGED_END in content
+    assert agents_md.read_text(encoding="utf-8") == _runtime_contract()
+    assert _backup_original(run_config.repo).read_text(encoding="utf-8") == (
+        "# project\n\nMy custom section.\n"
+    )
+
+
+def test_bootstrap_without_agents_md_restores_to_absent(run_config):
+    from aidor.bootstrap import teardown
+
+    agents_md = run_config.repo / "AGENTS.md"
+    agents_md.unlink()
+
+    bootstrap(run_config)
+    assert agents_md.read_text(encoding="utf-8") == _runtime_contract()
+    assert json.loads(_backup_meta(run_config.repo).read_text(encoding="utf-8")) == {
+        "existed": False
+    }
+    assert not _backup_original(run_config.repo).exists()
+
+    teardown(run_config)
+    assert not agents_md.exists()
+
+
+def test_bootstrap_refreshes_stale_agents_backup_after_operator_edit(run_config):
+    """If a crashed run left backup metadata but the operator rewrote
+    AGENTS.md before the next run, bootstrap must preserve the operator's new
+    file instead of trusting stale metadata from the old run.
+    """
+    repo = run_config.repo
+    (repo / "AGENTS.md").write_text(_runtime_contract(), encoding="utf-8")
+    (repo / AGENTS_BACKUP_DIR).mkdir(parents=True)
+    _backup_original(repo).write_text("# old original\n", encoding="utf-8")
+    _backup_meta(repo).write_text(json.dumps({"existed": True}) + "\n", encoding="utf-8")
+
+    new_operator_contract = "# new operator AGENTS\n"
+    (repo / "AGENTS.md").write_text(new_operator_contract, encoding="utf-8")
+
+    bootstrap(run_config)
+
+    assert (repo / "AGENTS.md").read_text(encoding="utf-8") == _runtime_contract()
+    assert _backup_original(repo).read_text(encoding="utf-8") == new_operator_contract
+
+
+def test_bootstrap_recovers_backup_when_runtime_agents_missing_after_crash(run_config):
+    """If metadata survived but runtime AGENTS.md was deleted, bootstrap should
+    keep the saved original as the backup source before reinstalling runtime
+    instructions.
+    """
+    repo = run_config.repo
+    (repo / "AGENTS.md").unlink()
+    (repo / AGENTS_BACKUP_DIR).mkdir(parents=True)
+    original = "# original before crash\n"
+    _backup_original(repo).write_text(original, encoding="utf-8")
+    _backup_meta(repo).write_text(json.dumps({"existed": True}) + "\n", encoding="utf-8")
+
+    bootstrap(run_config)
+
+    assert (repo / "AGENTS.md").read_text(encoding="utf-8") == _runtime_contract()
+    assert _backup_original(repo).read_text(encoding="utf-8") == original
+
+
+def test_bootstrap_discards_stale_original_when_no_project_agents_md(run_config):
+    repo = run_config.repo
+    (repo / "AGENTS.md").unlink()
+    (repo / AGENTS_BACKUP_DIR).mkdir(parents=True)
+    _backup_original(repo).write_text("# stale original\n", encoding="utf-8")
+    _backup_meta(repo).write_text(json.dumps({"existed": False}) + "\n", encoding="utf-8")
+
+    bootstrap(run_config)
+
+    assert (repo / "AGENTS.md").read_text(encoding="utf-8") == _runtime_contract()
+    assert not _backup_original(repo).exists()
+
+
+def test_teardown_rejects_invalid_agents_backup_metadata(run_config):
+    from aidor.bootstrap import teardown
+
+    backup_dir = run_config.repo / AGENTS_BACKUP_DIR
+    backup_dir.mkdir(parents=True)
+    _backup_meta(run_config.repo).write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="invalid aidor AGENTS.md backup metadata"):
+        teardown(run_config)
+
+
+def test_teardown_fails_when_agents_backup_original_is_missing(run_config):
+    from aidor.bootstrap import teardown
+
+    backup_dir = run_config.repo / AGENTS_BACKUP_DIR
+    backup_dir.mkdir(parents=True)
+    _backup_meta(run_config.repo).write_text(json.dumps({"existed": True}) + "\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="missing AGENTS.md backup"):
+        teardown(run_config)
 
 
 def test_bootstrap_gitignores_both_aidor_and_hooks_on_fresh_repo(run_config):
@@ -88,6 +203,7 @@ def test_bootstrap_gitignores_both_aidor_and_hooks_on_fresh_repo(run_config):
     # packaged copy and must not be tracked in target repos.
     assert ".github/agents/aidor-coder.md" in lines
     assert ".github/agents/aidor-reviewer.md" in lines
+    assert ".github/aidor-backups/" in lines
 
 
 def test_bootstrap_appends_hooks_ignore_when_only_aidor_is_present(run_config):
@@ -105,6 +221,7 @@ def test_bootstrap_appends_hooks_ignore_when_only_aidor_is_present(run_config):
     assert ".github/hooks/aidor.json" in lines
     assert ".github/agents/aidor-coder.md" in lines
     assert ".github/agents/aidor-reviewer.md" in lines
+    assert ".github/aidor-backups/" in lines
     assert "my_local_notes.txt" in lines  # pre-existing line preserved
     assert "# existing" in content  # comments preserved
 
@@ -120,6 +237,7 @@ def test_bootstrap_is_idempotent_for_gitignore(run_config):
     assert first.count(".github/hooks/aidor.json") == 1
     assert first.count(".github/agents/aidor-coder.md") == 1
     assert first.count(".github/agents/aidor-reviewer.md") == 1
+    assert first.count(".github/aidor-backups/") == 1
 
 
 def test_bootstrap_refreshes_stale_agent_files(run_config):
@@ -262,16 +380,17 @@ def test_teardown_removes_agent_instructions(run_config):
     assert not coder.parent.exists()
 
 
-def test_teardown_keeps_passive_artefacts(run_config):
-    """``teardown`` removes Copilot-facing files only. ``AGENTS.md``
-    (mixed managed-block + operator-edited content) and run artefacts
-    (``.aidor/``) stay so the operator can inspect them after the run."""
+def test_teardown_restores_project_agents_md_and_keeps_run_artefacts(run_config):
+    """``teardown`` restores the project AGENTS.md and keeps ``.aidor/`` so
+    the operator can inspect run artefacts after the run."""
     from aidor.bootstrap import teardown
 
+    original = (run_config.repo / "AGENTS.md").read_text(encoding="utf-8")
     bootstrap(run_config)
     teardown(run_config)
     repo = run_config.repo
-    assert (repo / "AGENTS.md").exists()
+    assert (repo / "AGENTS.md").read_text(encoding="utf-8") == original
+    assert not (repo / AGENTS_BACKUP_DIR).exists()
     assert run_config.aidor_dir.exists()
 
 

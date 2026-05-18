@@ -36,7 +36,8 @@ Regardless of the instructions per repo, the orchestrator must ensure both revie
 * All bugfixes must be covered by a new test, no exceptions.
 * Linters / code styles are a must. The coder is not allowed to exclude any rule without explicit consent from the human. We can have a list of allowed exceptions per linter and scenarios that the orchestrator can provide to the coder without human intervention.
 * Everything must be documented in Architecture, Readme and Getting started documents. these are integral part of any repo.
-* all the above rules must be saved as permanent instructions, using AGENTS.md or other mechanism.
+* all the above rules must be saved as aidor-owned runtime instructions, copied
+  into the target repo only while orchestration is active.
 
 If any of these are violated, consult the human how to proceed, we will update the source together to have a deterministic rule set on how to tackle each issue.
 
@@ -113,3 +114,7 @@ The orchestrator must validate none of the LLM agents are doing ANYTHING outside
   phase. Continuing on stale state is forbidden.
 * `.aidor/ABORT` is a one-shot run-abort marker. A fresh run must clear a stale
   marker before starting the first agent phase.
+* aidor's orchestration `AGENTS.md` is a runtime artifact, not this repository's
+  interactive agent instructions. Store it as a renamed packaged resource,
+  copy it to the target repo as `AGENTS.md` only for the duration of a run, and
+  restore any pre-existing target `AGENTS.md` afterward.

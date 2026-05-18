@@ -38,9 +38,10 @@ backend for your platform (`SetThreadExecutionState` on Windows,
 
 ## First run (dry-run)
 
-A dry-run exercises bootstrap (writes `AGENTS.md` managed block,
-`.github/agents/*.md`, `.github/hooks/aidor.json`, `.aidor/` skeleton) but
-does NOT spawn Copilot. Safe to run anywhere.
+A dry-run exercises bootstrap: it installs aidor's temporary runtime
+`AGENTS.md`, backs up any project `AGENTS.md` under `.github/aidor-backups/`,
+writes `.github/agents/*.md`, `.github/hooks/aidor.json`, and the `.aidor/`
+skeleton, but does NOT spawn Copilot.
 
 ```pwsh
 cd <some-repo>
@@ -54,13 +55,14 @@ bootstrap: created .aidor/
 bootstrap: created .aidor/reviews/
 ...
 bootstrap: wrote .github/hooks/aidor.json
-bootstrap: updated AGENTS.md
+bootstrap: installed runtime AGENTS.md
 dry-run complete
 ```
 
-Inspect what was written: `git status`. The `.github/hooks/aidor.json` file
-is gitignored because it bakes the absolute path of `python.exe` from your
-venv (so the hook works without depending on `PATH`).
+Inspect what was written: `git status`. The `.github/hooks/aidor.json` file is
+gitignored because it bakes the absolute path of `python.exe` from your venv
+(so the hook works without depending on `PATH`). The temporary `AGENTS.md` is
+restored or removed by `aidor clean` / run teardown.
 
 ## Real run
 
@@ -159,7 +161,7 @@ aidor abort
 ## Cleaning up
 
 ```pwsh
-aidor clean -y          # delete .aidor/ (keeps AGENTS.md + .github/agents/)
+aidor clean -y          # restore AGENTS.md, remove .aidor/ + runtime files
 ```
 
 ## Quality gates (this repo)

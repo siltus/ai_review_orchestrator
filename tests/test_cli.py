@@ -20,6 +20,7 @@ from click.exceptions import Exit
 from typer.testing import CliRunner
 
 import aidor.cli as cli
+from aidor.bootstrap import AGENTS_BACKUP_DIR, AGENTS_BACKUP_META, AGENTS_BACKUP_ORIGINAL
 from aidor.cli import app
 from aidor.model_history import ModelInfo
 from aidor.state import State
@@ -169,6 +170,24 @@ def test_clean_removes_only_agent_files_if_other_artefacts_absent(tmp_path: Path
     result = runner.invoke(app, ["clean", "--repo", str(tmp_path), "-y"])
     assert result.exit_code == 0, result.stdout
     assert not coder.exists()
+
+
+def test_clean_restores_agents_md_before_removing_aidor_dir(tmp_path: Path):
+    aidor_dir = tmp_path / ".aidor"
+    aidor_dir.mkdir()
+    (aidor_dir / "state.json").write_text("{}", encoding="utf-8")
+    backup_dir = tmp_path / AGENTS_BACKUP_DIR
+    backup_dir.mkdir(parents=True)
+    (backup_dir / AGENTS_BACKUP_ORIGINAL).write_text("# project agents\n", encoding="utf-8")
+    (backup_dir / AGENTS_BACKUP_META).write_text('{"existed": true}\n', encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("# aidor runtime\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["clean", "--repo", str(tmp_path), "-y"])
+
+    assert result.exit_code == 0, result.stdout
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8") == "# project agents\n"
+    assert not backup_dir.exists()
+    assert not aidor_dir.exists()
 
 
 # ---- corrupted state.json ------------------------------------------------

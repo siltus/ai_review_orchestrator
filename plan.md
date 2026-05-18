@@ -64,7 +64,7 @@ The modern `copilot` binary (separate from the retired `gh copilot` extension) i
 ```
 
 **What aidor owns (the irreducible core):**
-1. Bootstrap — write `AGENTS.md`, `.github/agents/aidor-coder.md`, `.github/agents/aidor-reviewer.md`, `.github/hooks/aidor.json` (idempotent, diff-friendly).
+1. Bootstrap — temporarily copy aidor's runtime `AGENTS.md`, write `.github/agents/aidor-coder.md`, `.github/agents/aidor-reviewer.md`, `.github/hooks/aidor.json` (idempotent, diff-friendly), and restore the project's original `AGENTS.md` on teardown.
 2. Round loop + convergence rule (§6).
 3. Review/fix file numbering, footer parsing, diff tracking.
 4. Subprocess supervision: idle/round timeouts, restart policy, `--continue` on resume (§7).
@@ -167,15 +167,21 @@ copilot -p "$PHASE_PROMPT" \
 
 ---
 
-## 5. Code baseline — lives in AGENTS.md
+## 5. Code baseline — temporary runtime AGENTS.md
 
-aidor writes a managed block into the repo's `AGENTS.md` on bootstrap (idempotent, between HTML comment markers so humans can edit the rest of the file). The block encodes:
+aidor stores its orchestration contract as the packaged resource
+`src/aidor/resources/aidor_runtime_agents.md`. On bootstrap, aidor backs up any
+target-repo `AGENTS.md` under `.github/aidor-backups/`, copies the packaged
+resource to `<repo>/AGENTS.md` for Copilot to read during the run, and restores
+or removes that file during teardown. This keeps aidor's runtime instructions
+out of this repository's interactive sessions while still giving the orchestrated
+agents a deterministic contract. The runtime contract encodes:
 
 1. **Supply-chain:** run the language-appropriate auditor as a build step or pre-commit hook (`pip-audit`, `npm audit`, `cargo audit`, etc.).
 2. **Test coverage:** ≥90% line coverage; bugfixes MUST ship with a regression test.
 3. **Linters / style:** must pass. Exclusions require human consent; pre-approved list at `.aidor/allowed_exceptions.yml`.
 4. **Documentation:** `README.md`, `ARCHITECTURE.md`, `GETTING_STARTED.md` must exist and be current.
-5. **Agent manifest:** this `AGENTS.md` file itself.
+5. **Runtime contract:** the temporary `AGENTS.md` installed for the run.
 6. **Guard rules** (mirror of §8) — stated explicitly for belt-and-suspenders.
 
 On rule ambiguity for a given repo, orchestrator halts and escalates so we can make the rule deterministic and update the source.
@@ -186,8 +192,11 @@ On rule ambiguity for a given repo, orchestrator halts and escalates so we can m
 
 ```
 <repo>/
-  AGENTS.md                             # aidor-managed block + human free-form
+  AGENTS.md                             # temporary aidor runtime contract
   .github/
+    aidor-backups/
+      AGENTS.md.original                # pre-run project AGENTS.md, if any
+      AGENTS.md.meta.json               # whether AGENTS.md existed pre-run
     agents/
       aidor-coder.md                    # generated if absent
       aidor-reviewer.md                 # generated if absent
@@ -212,7 +221,10 @@ On rule ambiguity for a given repo, orchestrator halts and escalates so we can m
     allowed_exceptions.yml              # linter-exclusion allowlist
 ```
 
-`.aidor/` is added to `.gitignore` on first run (asking the human once). `.github/agents/*` and `AGENTS.md` are intentionally NOT gitignored — they are part of the repo's contract.
+`.aidor/`, `.github/hooks/aidor.json`, `.github/agents/aidor-*.md`, and
+`.github/aidor-backups/` are added to `.gitignore` on first run. `AGENTS.md`
+itself is not added to downstream `.gitignore` because a tracked project
+`AGENTS.md` must remain trackable after aidor restores it.
 
 ---
 
@@ -220,7 +232,7 @@ On rule ambiguity for a given repo, orchestrator halts and escalates so we can m
 
 ```
 IDLE
-  → BOOTSTRAP            (write AGENTS.md block, agents, hook file, snapshot config)
+  → BOOTSTRAP            (copy runtime AGENTS.md, agents, hook file, snapshot config)
   → REVIEW_REQUESTED → REVIEW_RUNNING → REVIEW_DONE
   → [convergence check]
       ├─ if CLEAN & PRODUCTION_READY=true → SUMMARIZE → EXIT
@@ -362,7 +374,7 @@ aidor run --coder <model> --reviewer <model> --repo <path>
 
 aidor status  <repo>    # show current state.json + last review
 aidor summary <repo>    # render summary table for completed run
-aidor clean   <repo>    # wipe .aidor/ (keeps AGENTS.md + .github/agents/*)
+aidor clean   <repo>    # restore AGENTS.md, wipe .aidor/ + runtime files
 aidor doctor  <repo>    # verify python version, copilot binary + --version, repo path, wake-lock availability
 ```
 
@@ -411,7 +423,8 @@ src/aidor/
   phase.py               # single Copilot invocation: build argv, stream JSONL,
                          # parse; also owns idle / round-timeout watchdog and
                          # SIGTERM + --continue restart policy
-  bootstrap.py           # idempotent write of AGENTS.md block, agents/, hooks/
+  bootstrap.py           # temporary AGENTS.md backup/copy/restore,
+                         # agents/, hooks/
   review_store.py        # file numbering, footer parser, diff between rounds
   state.py               # state.json load/save, resume; atomic replace retry
   hook_resolver.py       # Copilot hook entry point: tool/shell/MCP/path/role
@@ -431,7 +444,8 @@ src/aidor/
   agent_templates/
     aidor-coder.md
     aidor-reviewer.md
-    agents_md_block.md   # the managed AGENTS.md section
+  resources/
+    aidor_runtime_agents.md
   # (hook JSON and guard flag matrix are generated in-code from
   #  `bootstrap.py` + `guard_profile.py`, not shipped as separate template
   #  files.)
@@ -458,7 +472,6 @@ pyproject.toml
 README.md
 GETTING_STARTED.md
 ARCHITECTURE.md
-AGENTS.md
 plan.md
 reqs.md
 ```
@@ -489,7 +502,7 @@ Output of the spike → pins `phase.py` argv template + `GETTING_STARTED.md`.
 
 1. **M0 Spike** — Copilot CLI verification (§13), document findings in `GETTING_STARTED.md`.
 2. **M1 Skeleton** — `typer` CLI, config, logging, `.aidor/` bootstrap, `state.json`, `aidor doctor`.
-3. **M2 Bootstrap writer** — idempotent generation of `AGENTS.md` block, `.github/agents/aidor-{coder,reviewer}.md`, `.github/hooks/aidor.json`, guard scripts.
+3. **M2 Bootstrap writer** — idempotent installation of temporary runtime `AGENTS.md`, `.github/agents/aidor-{coder,reviewer}.md`, `.github/hooks/aidor.json`, guard scripts, and teardown restore of any project `AGENTS.md`.
 4. **M3 Phase runner** — `phase.py`: build argv from `guard_profile` + flags, spawn, stream JSONL, capture transcript/OTel, detect `end_turn`.
 5. **M4 One round** — reviewer phase → writes review file → coder phase → writes fixes file. Parse footer.
 6. **M5 Multi-round loop** — convergence rule (§7.1), readiness-gate round, `--max-rounds`, `--resume` via `--continue`.
@@ -608,7 +621,9 @@ Rounds can legitimately run **hours** (per `reqs.md` and confirmed user expectat
   - **Reuse Copilot CLI features** instead of rebuilding them:
     - Non-interactive driver = `copilot -p --autopilot --output-format=json`.
     - Roles = Copilot **custom agents** (`.github/agents/aidor-*.md`) invoked via `--agent=`.
-    - Code baseline = **AGENTS.md** managed block.
+    - Code baseline = temporary runtime **AGENTS.md** copied from
+      `src/aidor/resources/aidor_runtime_agents.md`, with any project original
+      backed up and restored after the run.
     - Guard = `--allow-all-tools --allow-all-paths` plus deny-by-default
       hook policy from YAML (`tool_allowlist.yml`, `shell_allowlist.yml`) for
       tool, shell, MCP, path, memory, and role checks.

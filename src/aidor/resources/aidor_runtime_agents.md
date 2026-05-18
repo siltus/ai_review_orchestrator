@@ -1,23 +1,21 @@
-<!-- AIDOR:MANAGED-BLOCK-START -->
-<!--
-    This block is maintained by aidor (https://…). Do not edit between the
-    MANAGED-BLOCK-START / END markers — your changes will be overwritten on
-    the next run. Add your own content ABOVE or BELOW this block.
--->
+# aidor runtime contract
 
-# Contract for automated agents working in this repository
+This file is installed temporarily by **aidor** while it orchestrates this
+repository. Do not edit it during a run: aidor restores the project's original
+`AGENTS.md` on teardown, or removes this file when the project did not have one.
+To change this runtime contract, update the packaged resource in aidor itself.
 
-This repository is being driven by the **aidor** orchestrator. Two agents —
-`aidor-coder` and `aidor-reviewer` — take turns: the reviewer audits the repo,
+This repository is being driven by the **aidor** orchestrator. Two agents -
+`aidor-coder` and `aidor-reviewer` - take turns: the reviewer audits the repo,
 the coder fixes the issues, the reviewer audits again, and so on, until the
 reviewer declares the repo production-ready.
 
 ## Code baseline (non-negotiable)
 
 1. **Supply-chain security.** The repository must run the language-appropriate
-   auditor — `pip-audit`, `pysentry`, `npm audit`, `cargo audit`, etc. — as a
+   auditor - `pip-audit`, `pysentry`, `npm audit`, `cargo audit`, etc. - as a
    build step or a git pre-commit hook. If none exists, add one.
-2. **Test coverage.** Line coverage must be ≥ 90 %. Every bugfix must be
+2. **Test coverage.** Line coverage must be >= 90 %. Every bugfix must be
    accompanied by a regression test. No exceptions. New regression tests
    must be placed in the existing test file that covers the module/feature
    under fix (`tests/test_<module>.py`); files of the form
@@ -36,14 +34,15 @@ reviewer declares the repo production-ready.
    human explicitly approved a narrow, documented exception.
 4. **Documentation.** `README.md`, `ARCHITECTURE.md`, and `GETTING_STARTED.md`
    must exist and be current with the code. Stale docs are bugs.
-5. **This file.** Keep `AGENTS.md` (this file) accurate. It is the persistent
-   contract agents read every session.
+5. **This runtime contract.** Follow this temporary `AGENTS.md` for the duration
+   of the aidor run. The project's own `AGENTS.md`, if any, is backed up and
+   restored after orchestration ends.
 
 ## Where the gates run (mandatory vs. optional)
 
 The **mandatory** enforcement point is the **local pre-commit gate**
-(`.pre-commit-config.yaml`). Every quality gate listed above — lint,
-format, supply-chain audit, test suite, coverage floor — must run there
+(`.pre-commit-config.yaml`). Every quality gate listed above - lint,
+format, supply-chain audit, test suite, coverage floor - must run there
 and block the commit on failure. That is what the coder is required to
 keep green.
 
@@ -56,7 +55,7 @@ baseline is met regardless of CI status.
 
 If the CLI sandbox blocks you from running the local gate (e.g. `ruff`,
 `pytest`, `pip-audit` are denied above the aidor guard hook), record
-that in your fixes summary and skip — do NOT block the round on it,
+that in your fixes summary and skip - do NOT block the round on it,
 and do NOT hand-format files to fake a green gate. The orchestrator
 will run the real gate before any commit lands.
 
@@ -65,9 +64,9 @@ will run the real gate before any commit lands.
 - Never push to a git remote.
 - Never change global git config or the user's home directory.
 - Never install anything globally (`npm -g`, `pip install`, `cargo install`,
-  `choco`, `winget`, `apt`, `brew`, `scoop`, …).
+  `choco`, `winget`, `apt`, `brew`, `scoop`, ...).
 - Never read or write files outside the repository root.
-- Project-local installs (`poetry install`, `npm ci`, …) are allowed only when
+- Project-local installs (`poetry install`, `npm ci`, ...) are allowed only when
   a lockfile already exists.
 - The coder must not modify `.aidor/allowed_exceptions.yml`,
   `.aidor/tool_allowlist.yml`, `.aidor/shell_allowlist.yml`,
@@ -92,26 +91,7 @@ will run the real gate before any commit lands.
 
 ## Asking questions
 
-The coder may use the `ask_user` tool when — and only when — a decision cannot
-be made from the review file, this `AGENTS.md`, or the code itself. The
+The coder may use the `ask_user` tool when - and only when - a decision cannot
+be made from the review file, this runtime `AGENTS.md`, or the code itself. The
 orchestrator may answer from policy automatically, or escalate to a human who
 could be asleep. Keep questions short, self-contained, and rare.
-
-<!-- AIDOR:MANAGED-BLOCK-END -->
-
-## Scope of the lockfile rule (clarification, review-0001)
-
-The "project-local installs allowed only when a lockfile already exists"
-guard in the managed block above governs **package installs that aidor
-itself triggers at runtime** while driving a *target* repository — e.g.
-a coder agent deciding to run `npm ci` or `poetry install` as part of a
-fix round against a downstream project. aidor refuses such installs
-unless the target repo already ships a lockfile, so agents cannot
-silently reshape a downstream project's dependency graph.
-
-The aidor repository's own bootstrap (`python -m pip install -e ".[dev]"`
-in `README.md`, `GETTING_STARTED.md`, and `.github/workflows/ci.yml`) is
-**not** a runtime agent install — it is human- or CI-initiated project
-setup for this Python package. Direct dependencies are pinned to minimum
-compatible versions in `pyproject.toml`; supply-chain drift is caught by
-the mandatory `pip-audit` step in the pre-commit gate and CI.

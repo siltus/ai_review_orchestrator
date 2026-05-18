@@ -71,7 +71,7 @@ are written under `.aidor/` inside the target repo.
 | --- | --- |
 | `cli.py` | Typer entry point. Subcommands: `run`, `status`, `summary`, `clean`, `doctor`, `abort`. `run --interactive` prompts for repo, models, effort, rounds, and timeouts; it reuses a cached Copilot model catalog for 24 hours by default and refreshes through ACP metadata first / the live models API second when needed. |
 | `config.py` | `RunConfig` dataclass + path derivations. Single source of truth for tunables. |
-| `bootstrap.py` | Idempotent on-disk setup: `AGENTS.md` managed block, `.github/agents/*.md`, `.github/hooks/aidor.json` (machine-specific, gitignored), `.aidor/` skeleton, `allowed_exceptions.yml` seed, config snapshot. |
+| `bootstrap.py` | Idempotent on-disk setup: temporarily copies aidor's runtime contract to target `AGENTS.md`, backs up any original under `.github/aidor-backups/`, writes `.github/agents/*.md`, `.github/hooks/aidor.json` (machine-specific, gitignored), `.aidor/` skeleton, `allowed_exceptions.yml` seed, and the config snapshot. Teardown restores or removes `AGENTS.md`. |
 | `orchestrator.py` | The state machine. Drives `PhaseRunner` per phase, parses review footers, decides next phase, handles convergence + readiness gate, runs the human-watcher task, clears stale one-shot `.aidor/ABORT` markers at startup, and fails closed if `state.json` cannot be persisted before another phase would launch. |
 | `phase.py` | One Copilot subprocess. Builds argv (`--agent`, `--model`, `--share`, `--output-format=json`, `--allow-all-tools` + `--allow-all-paths` from `guard_profile`), spawns it, streams stdout JSONL → events, streams stderr to disk, runs an idle + round-timeout watchdog (pause-aware while a hook is waiting on a human), restarts via `--continue` with exponential back-off. |
 | `guard_profile.py` | Returns the spawn flags (`--allow-all-tools --allow-all-paths`); see the module docstring for why the historical `--allow-tool` / `--deny-tool` matrix was abandoned. The actual security policy lives in `hook_resolver.py` and `policies/*.yml`. |
@@ -85,8 +85,9 @@ are written under `.aidor/` inside the target repo.
 
 Static assets shipped with the wheel:
 
-- `src/aidor/agent_templates/` — `aidor-coder.md`, `aidor-reviewer.md`,
-  `agents_md_block.md` (the managed block injected into `AGENTS.md`).
+- `src/aidor/agent_templates/` — `aidor-coder.md`, `aidor-reviewer.md`.
+- `src/aidor/resources/` — `aidor_runtime_agents.md`, the temporary runtime
+  contract copied to target repos as `AGENTS.md` for the duration of a run.
 - `src/aidor/policies/` — `allowed_exceptions.yml` (lint exceptions
   seed), `question_classes.yml` (deterministic-answer rules),
   `tool_allowlist.yml` (deny-by-default Copilot-tool surface),
@@ -120,6 +121,12 @@ Everything is written into `<repo>/.aidor/` (gitignored by default):
                             # or by SIGINT/SIGTERM; polled by the phase
                             # watchdog and the hook resolver)
 ```
+
+During bootstrap, any pre-existing `<repo>/AGENTS.md` is copied to
+`.github/aidor-backups/AGENTS.md.original`, with metadata in
+`.github/aidor-backups/AGENTS.md.meta.json`, before aidor writes its runtime
+contract as `<repo>/AGENTS.md`. Run teardown and `aidor clean` restore the
+original file, or remove `AGENTS.md` when the project did not have one.
 
 ## State machine
 
@@ -225,13 +232,12 @@ phase. (This was the bug that killed the first dogfood run.)
 The repo runs four gates in pre-commit and CI:
 
 1. **`ruff check` + `ruff format --check`** — lint + style.
-2. **`pyright`** — static type check. Not part of the AGENTS.md agent
-   contract, but enforced as a repo gate to keep the typed public API
-   honest.
+2. **`pyright`** — static type check. Not part of the aidor runtime agent
+   contract, but enforced as a repo gate to keep the typed public API honest.
 3. **`pip-audit --skip-editable`** — supply-chain vulnerability scan
-   (AGENTS.md baseline #1).
+   (runtime contract baseline #1).
 4. **`pytest`** — full unit suite. Both pre-commit and CI invoke pytest with
-   `--cov=aidor --cov-fail-under=90` so the AGENTS.md ≥ 90 % line-coverage
+   `--cov=aidor --cov-fail-under=90` so the runtime contract's >= 90 % line-coverage
    floor is enforced before a commit lands and again in CI.
 
 See [.pre-commit-config.yaml](.pre-commit-config.yaml) and
