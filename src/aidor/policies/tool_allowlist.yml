@@ -42,6 +42,29 @@ tools:
   - rg
   - ripgrep
 
+  # Serena MCP tools. Path/symbol tools are containment-checked via their
+  # `relative_path` argument so they stay inside the guarded repo, and
+  # memory tools reject `global/`, absolute, and traversal-like names.
+  - serena-check_onboarding_performed
+  - serena-delete_memory
+  - serena-edit_memory
+  - serena-initial_instructions
+  - serena-find_symbol
+  - serena-find_referencing_symbols
+  - serena-get_symbols_overview
+  - serena-insert_after_symbol
+  - serena-insert_before_symbol
+  - serena-list_memories
+  - serena-onboarding
+  - serena-open_dashboard
+  - serena-read_memory
+  - serena-rename_memory
+  - serena-rename_symbol
+  - serena-replace_content
+  - serena-replace_symbol_body
+  - serena-safe_delete_symbol
+  - serena-write_memory
+
   # ---- File writes / edits (path containment enforced) --------------
   - write
   - Write
@@ -79,13 +102,37 @@ tools:
   - web_search
   - WebSearch
   - fetch
-  # GitHub MCP server's web_search surface. Copilot namespaces MCP
-  # tools as ``<server>/<tool>``; the bare ``web_search`` entry above
-  # does not match. This is the read-only search variant the reviewer
-  # reaches for when checking external CVE references / upstream issue
-  # threads — informational, no repo writes, and observed denied once
-  # in the video-organizer dogfood (orchestrator.log:1009).
+  # GitHub MCP server read-only surfaces. These query GitHub resources
+  # and do not accept local repo paths, so no path-containment
+  # classification is needed beyond the deny-by-default tool allowlist.
   - github-mcp-server/web_search
+  - github-mcp-server-actions_get
+  - github-mcp-server-actions_list
+  - github-mcp-server-get_commit
+  - github-mcp-server-get_copilot_space
+  - github-mcp-server-get_file_contents
+  - github-mcp-server-get_job_logs
+  - github-mcp-server-issue_read
+  - github-mcp-server-list_branches
+  - github-mcp-server-list_commits
+  - github-mcp-server-list_copilot_spaces
+  - github-mcp-server-list_issues
+  - github-mcp-server-list_pull_requests
+  - github-mcp-server-pull_request_read
+  - github-mcp-server-search_code
+  - github-mcp-server-search_issues
+  - github-mcp-server-search_pull_requests
+  - github-mcp-server-search_repositories
+  - github-mcp-server-search_users
+
+  # Tavily remote MCP tools. These are web research/extraction surfaces
+  # and do not accept repo paths, so no path-containment classification is
+  # needed beyond the deny-by-default tool allowlist.
+  - tavily-remote-mcp-tavily_crawl
+  - tavily-remote-mcp-tavily_extract
+  - tavily-remote-mcp-tavily_map
+  - tavily-remote-mcp-tavily_research
+  - tavily-remote-mcp-tavily_search
 
   # ---- Status / meta / persistence (in-process) ---------------------
   - store_memory
@@ -103,3 +150,114 @@ tools:
   # ---- Local SQL / session-store queries (read-only by default) -----
   - sql
   - session_store_sql
+
+# ---- Optional tool classifications -------------------------------------
+#
+# These lists extend the exact tool allowlist above. They are data-driven on
+# purpose: external MCP servers can be installed, removed, or renamed without
+# requiring Python hook changes. Listing a tool here is harmless when that MCP
+# is not present in a particular Copilot session.
+
+mcp_tool_patterns:
+  - '*mcp-server*'
+  - '*/*'
+  - 'github-mcp-server-*'
+  - 'serena-*'
+  - 'tavily-remote-mcp-*'
+
+mcp_tools:
+  - github-mcp-server/web_search
+  - github-mcp-server-actions_get
+  - github-mcp-server-actions_list
+  - github-mcp-server-get_commit
+  - github-mcp-server-get_copilot_space
+  - github-mcp-server-get_file_contents
+  - github-mcp-server-get_job_logs
+  - github-mcp-server-issue_read
+  - github-mcp-server-list_branches
+  - github-mcp-server-list_commits
+  - github-mcp-server-list_copilot_spaces
+  - github-mcp-server-list_issues
+  - github-mcp-server-list_pull_requests
+  - github-mcp-server-pull_request_read
+  - github-mcp-server-search_code
+  - github-mcp-server-search_issues
+  - github-mcp-server-search_pull_requests
+  - github-mcp-server-search_repositories
+  - github-mcp-server-search_users
+  - tavily-remote-mcp-tavily_crawl
+  - tavily-remote-mcp-tavily_extract
+  - tavily-remote-mcp-tavily_map
+  - tavily-remote-mcp-tavily_research
+  - tavily-remote-mcp-tavily_search
+  - serena-check_onboarding_performed
+  - serena-delete_memory
+  - serena-edit_memory
+  - serena-find_referencing_symbols
+  - serena-find_symbol
+  - serena-get_symbols_overview
+  - serena-initial_instructions
+  - serena-insert_after_symbol
+  - serena-insert_before_symbol
+  - serena-list_memories
+  - serena-onboarding
+  - serena-open_dashboard
+  - serena-read_memory
+  - serena-rename_memory
+  - serena-rename_symbol
+  - serena-replace_content
+  - serena-replace_symbol_body
+  - serena-safe_delete_symbol
+  - serena-write_memory
+
+write_tools:
+  - serena-insert_after_symbol
+  - serena-insert_before_symbol
+  - serena-rename_symbol
+  - serena-replace_content
+  - serena-replace_symbol_body
+  - serena-safe_delete_symbol
+
+path_scoped_tools:
+  - serena-find_referencing_symbols
+  - serena-find_symbol
+  - serena-get_symbols_overview
+  - serena-insert_after_symbol
+  - serena-insert_before_symbol
+  - serena-rename_symbol
+  - serena-replace_content
+  - serena-replace_symbol_body
+  - serena-safe_delete_symbol
+
+path_arg_keys:
+  - path
+  - file
+  - filePath
+  - target
+  - relative_path
+
+deny_path_prefixes:
+  - '<ext'
+
+memory_scoped_tools:
+  - serena-delete_memory
+  - serena-edit_memory
+  - serena-list_memories
+  - serena-read_memory
+  - serena-rename_memory
+  - serena-write_memory
+
+memory_arg_keys:
+  - memory_name
+  - old_name
+  - new_name
+  - topic
+
+memory_forbidden_values:
+  - global
+
+memory_forbidden_prefixes:
+  - global/
+
+memory_deny_absolute: true
+memory_deny_parent_segments: true

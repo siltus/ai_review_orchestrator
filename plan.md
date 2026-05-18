@@ -23,8 +23,8 @@ The modern `copilot` binary (separate from the retired `gh copilot` extension) i
 | Model selection | `--model=MODEL` or `COPILOT_MODEL` env var | Accepts same strings as the `/model` slash command. |
 | Role / persona | **Custom agents** in `.github/agents/<name>.md` invoked via `--agent=<name>` | Markdown file with frontmatter: `description`, `model`, `tools`, `mcp-servers`. A built-in `code-review` agent already exists; we specialize our own. |
 | Code baseline instructions | `AGENTS.md` + `.github/copilot-instructions.md` | Auto-loaded by Copilot every session. `copilot init` bootstraps them. |
-| Path sandbox | Trusted directories + `--add-dir=PATH` + `--disallow-temp-dir` | Runs from `cwd`. We launch inside the repo → confined by default. |
-| Tool permissions (our "Guard") | `--allow-tool='shell(git:*)'`, `--deny-tool='shell(git push)'`, `--deny-tool='shell(rm)'`, pattern `Kind(argument)` with `shell/write/read/url/memory/MCP_SERVER` | Deny rules take precedence over allow, even with `--allow-all`. Replaces most of our custom command-interception layer. |
+| Path sandbox | `--allow-all-paths` plus aidor hook containment | Copilot can create its own scratch files, while aidor denies repo-escape writes and unsafe shell path tokens. |
+| Tool permissions (our "Guard") | `--allow-all-tools` plus aidor hook policy | Deny-by-default YAML policy in `tool_allowlist.yml` / `shell_allowlist.yml` handles tools, shell clauses, MCPs, memory scope, path containment, and role-protected files. |
 | Controlled interactivity | Keep `ask_user` **enabled** (do NOT pass `--no-ask-user`); intercept via hooks | We want the coder to be able to ask clarifications (e.g., lint exception approval). The hook layer answers known cases from policy; unknowns are escalated to the human with **no timeout** (the human may be asleep — see §9.4). Copilot-the-subprocess never blocks on real stdin; our hook process is the thing that waits. |
 | Programmatic permission / elicitation decisions | **Hooks** in `.github/hooks/*.json` — `preToolUse`, `permissionRequest`, `notification(elicitation_dialog)`, `agentStop`, … | `preToolUse` on the `ask_user` tool can synthesize an answer via `modifiedArgs` or deny with a reason. `permissionRequest` auto-allows/denies with reason fed back to the LLM. `notification(elicitation_dialog)` can inject `additionalContext` asynchronously. `agentStop` can force another turn. |
 | Completion signal | `--output-format=json` → `stopReason: "end_turn"` on the last event + process exit | Deterministic, no sentinel parsing. |
@@ -157,8 +157,8 @@ copilot -p "$PHASE_PROMPT" \
         --autopilot \
         --output-format=json \
         --share=.aidor/transcripts/reviewer-0003.md \
-        --allow-tool='shell(git:*)' \
-        --deny-tool='shell(git push)' \
+        --allow-all-tools \
+        --allow-all-paths \
         # NOTE: ask_user stays enabled; handled by our hooks (§9.4).
         [... see §9 full policy ...]
 ```
@@ -240,6 +240,12 @@ The first time a review comes back with `critical==0 && major==0` but `PRODUCTIO
 
 - **Hard cap:** `--max-rounds 10`. On cap hit → SUMMARIZE with status `UNCONVERGED` and escalate.
 - Expected typical run: 5–6 rounds + 1 readiness gate.
+- State is saved after every transition. If `.aidor/state.json` cannot be
+  persisted after retrying transient filesystem errors, aidor exits with code 4
+  before launching another reviewer/coder phase. The final shutdown save is
+  best-effort so teardown and the summary can still run.
+- `.aidor/ABORT` is one-shot. A new run clears a stale abort marker after
+  bootstrap and before any phase launch.
 
 ---
 
@@ -264,71 +270,54 @@ See §17 for the full long-session durability contract.
 
 ## 9. Guard (safety layer)
 
-Implemented as Copilot CLI flags + one small hook script. No stdin/stdout interception.
+Implemented as Copilot hooks plus data-driven YAML policies. `guard_profile.py`
+intentionally launches Copilot with `--allow-all-tools --allow-all-paths`
+because Copilot's static allow/deny flag matrix proved too brittle for
+cross-platform shells and MCP names. The hook resolver is the enforcement point.
 
-### 9.1 Allow/deny flag baseline (applied to every invocation)
+### 9.1 Deny-by-default tool and MCP policy
 
-Allowed without asking:
+`bootstrap.py` writes `.github/hooks/aidor.json`; every relevant hook invokes
+`python -m aidor.hook_resolver`. The resolver loads shipped defaults from
+`src/aidor/policies/*.yml` plus repo overrides under `.aidor/*.yml`.
 
-```
---allow-tool='read'                        # any file read inside trusted dirs
---allow-tool='write'                       # any file write inside trusted dirs
---allow-tool='shell(git status)'
---allow-tool='shell(git diff)'
---allow-tool='shell(git log)'
---allow-tool='shell(git add)'
---allow-tool='shell(git commit)'
---allow-tool='shell(git restore)'
---allow-tool='shell(git stash)'
---allow-tool='shell(git branch)'
---allow-tool='shell(git switch)'
---allow-tool='shell(git checkout)'
-# + project build/test/lint/audit commands detected from manifests
-```
+- `tool_allowlist.yml` is deny-by-default for Copilot tools. It defines normal
+  tools, write tools, path-scoped tools, memory-scoped tools, MCP tools, and MCP
+  name patterns.
+- External MCP specifics are policy data only. Runtime Python must not
+  hard-code optional servers such as Serena, Tavily, or GitHub MCP because those
+  tools may or may not exist in a user's Copilot environment.
+- Denied MCP attempts are appended to `.aidor/logs/failed_mcp_tools.jsonl` and
+  surfaced in `aidor summary` with guidance to extend `.aidor/tool_allowlist.yml`
+  only after review.
 
-Always denied (deny takes precedence):
+### 9.2 Path, role, and shell enforcement
 
-```
---deny-tool='shell(git push)'
---deny-tool='shell(git remote)'
---deny-tool='shell(git config --global)'
---deny-tool='shell(sudo)'
---deny-tool='shell(rm -rf /)'
---deny-tool='shell(npm install -g)'
---deny-tool='shell(pnpm add -g)'
---deny-tool='shell(pip install)'           # use venv inside repo, see §9.3
---deny-tool='shell(cargo install)'
---deny-tool='shell(go install)'
---deny-tool='shell(choco)'
---deny-tool='shell(winget)'
---deny-tool='shell(apt)'
---deny-tool='shell(apt-get)'
---deny-tool='shell(brew)'
---deny-tool='shell(scoop)'
---deny-tool='shell(curl)'                  # blanket; project-approved script whitelist lifts this
---deny-tool='shell(wget)'
---deny-url='*'                             # url allowlist managed below
-```
+The hook resolver covers patterns the flag matrix cannot express:
 
-Path sandbox:
-
-```
---cwd <repo>                               # implicit
---disallow-temp-dir                        # force writes under repo
-# no --allow-all-paths, no --add-dir outside repo
-```
-
-### 9.2 Hook script (`.github/hooks/aidor.json`)
-
-Covers patterns the flag matrix cannot express (path containment checks, environment checks, stronger shell-line parsing). `bootstrap.py` writes `.github/hooks/aidor.json` whose entries invoke `python -m aidor.hook_resolver` (see `src/aidor/hook_resolver.py`); the resolver receives the JSON payload from `preToolUse` / `permissionRequest` on stdin and returns `{"permissionDecision":"deny","permissionDecisionReason":"..."}` on violation. Responsibilities:
-
-- Re-check that any `write`/`edit`/`create` target resolves under the canonical repo root (symlink-safe).
-- Veto shell commands whose fully expanded argv escapes repo bounds (e.g., `cp file /etc/...`).
-- Log every tool invocation to `.aidor/logs/orchestrator.log`.
+- Re-check every write/edit/create/apply-patch target under the canonical repo
+  root, symlink-safe.
+- Parse shell clauses against `shell_allowlist.yml`; global installs, remote
+  pushes, global config changes, and writes outside the repo remain denied.
+- Enforce role-scoped protected paths. The coder cannot modify
+  `.aidor/allowed_exceptions.yml`, `.aidor/tool_allowlist.yml`,
+  `.aidor/shell_allowlist.yml`, `.github/hooks/aidor.json`,
+  `.github/agents/aidor-*.md`, review files, run state, logs, pending IPC,
+  transcripts, or `.aidor/ABORT`. The reviewer may modify policy/hook/agent
+  files only after careful consideration and should use `ask_user` when in
+  doubt.
+- Treat git submodules as external pinned dependencies. Agents ignore code
+  issues inside submodule paths and only handle parent-repo integration,
+  pinning, and exclusion wiring.
+- Log hook decisions and breadcrumbs to `.aidor/logs/orchestrator.log`.
 
 ### 9.3 Project-local installs
 
-Lockfile-gated (`poetry.lock`, `package-lock.json`, `Cargo.lock`, etc.). Flag `--allow-local-install` (default: on; disable for hermetic runs). When on, aidor adds targeted allow rules: `--allow-tool='shell(poetry install)'`, `--allow-tool='shell(npm ci)'`, etc.
+Lockfile-gated (`poetry.lock`, `package-lock.json`, `Cargo.lock`, etc.). Flag
+`--allow-local-install` defaults on and can be disabled for hermetic runs. When
+on, the shell allowlist permits only the project-local install forms that match
+the detected lockfiles (for example `poetry install`, `npm ci`, or ecosystem
+equivalents). Global installs remain denied.
 
 Violations → hook denies with reason → halt phase, red banner, v1.1 Telegram.
 
@@ -360,6 +349,10 @@ This keeps interactivity intact for genuine clarifications while guaranteeing th
 
 ```
 aidor run --coder <model> --reviewer <model> --repo <path>
+          [--interactive]
+          [--model-cache-ttl-hours 24]
+          [--effort low|medium|high|xhigh]
+          [--reviewer-effort ...] [--coder-effort ...]
           [--max-rounds 10]
           [--idle-timeout 120] [--round-timeout 10800]
           [--allow-local-install/--no-allow-local-install]
@@ -379,7 +372,15 @@ Example matching `reqs.md`:
 aidor run --coder opus4.7 --reviewer gpt5 --repo d:\src\somerepo
 ```
 
-Model strings are passed verbatim to Copilot CLI (`--model=...`); validation against `copilot /model` is not implemented in v0.1 — invalid strings surface as the first round's launch failure. Documented in `GETTING_STARTED.md`.
+For scripted runs, model strings are passed verbatim to Copilot CLI
+(`--model=...`) and `--coder` / `--reviewer` are required. For interactive
+runs, `--interactive` prompts for repo, coder model, reviewer model, shared or
+per-role reasoning effort, max rounds, idle timeout, round timeout, and final
+confirmation. The picker loads the current Copilot catalog from ACP
+`session/new` model metadata first and the live `/models` API second, sorts by
+model id, marks recent choices, and appends a custom/BYOK entry. The catalog is
+cached for 24 hours by default; `--model-cache-ttl-hours 0` forces refresh.
+There is no shipped hard-coded model list.
 
 ---
 
@@ -402,24 +403,31 @@ Actual v0.1 layout (keep in sync with `src/aidor/` + `tests/`):
 ```
 src/aidor/
   __main__.py
-  cli.py                 # typer app (run/status/summary/clean/doctor)
-  orchestrator.py        # state machine, main loop
+  cli.py                 # typer app (run/status/summary/clean/doctor);
+                         # run --interactive model/effort picker
+  model_history.py       # ACP-first model discovery + 24h catalog/recent cache
+  orchestrator.py        # state machine, main loop; stale ABORT cleanup and
+                         # fatal state-persistence handling
   phase.py               # single Copilot invocation: build argv, stream JSONL,
                          # parse; also owns idle / round-timeout watchdog and
                          # SIGTERM + --continue restart policy
   bootstrap.py           # idempotent write of AGENTS.md block, agents/, hooks/
   review_store.py        # file numbering, footer parser, diff between rounds
-  state.py               # state.json load/save, resume
-  hook_resolver.py       # Copilot hook entry point: policy → state → human
+  state.py               # state.json load/save, resume; atomic replace retry
+  hook_resolver.py       # Copilot hook entry point: tool/shell/MCP/path/role
+                         # guard plus policy → state → human ask_user resolver
                          # (`python -m aidor.hook_resolver`)
-  guard_profile.py       # build --allow-tool/--deny-tool flag lists + hook JSON
+  guard_profile.py       # Copilot spawn flags; policy enforcement is in hooks
   telemetry.py           # parse Copilot OTel JSONL
-  summary.py             # aggregate + render final table, write summary.md
+  summary.py             # aggregate + render final table, denied MCP summary,
+                         # write summary.md
   wake_lock.py           # cross-platform wake lock (keep-alive)
   config.py
   policies/
     allowed_exceptions.yml
     question_classes.yml # source of truth for policy-answered ask_user classes
+    tool_allowlist.yml   # deny-by-default tool/MCP policy
+    shell_allowlist.yml  # shell clause policy
   agent_templates/
     aidor-coder.md
     aidor-reviewer.md
@@ -434,6 +442,7 @@ tests/
   fake_copilot.py                 # PATH-shimmable script emitting scripted JSONL
   test_bootstrap.py
   test_cli.py
+  test_model_history.py
   test_guard_profile.py
   test_hook_resolver.py
   test_orchestrator_integration.py
@@ -461,8 +470,8 @@ reqs.md
 Narrower than before — most questions are answered from docs. The spike was a historical M0 deliverable (no `scripts/spike_copilot.py` ships in v0.1); its checklist is preserved here for traceability and is now covered by `aidor doctor` plus the fake-copilot test harness. The items verified empirically were:
 
 1. `copilot` binary is on PATH and authenticated (`copilot /user show`).
-2. `copilot /model` lists the exact model strings we'll pass (record the list for `GETTING_STARTED.md` and `aidor doctor`).
-3. `copilot -p "say hi" --autopilot --output-format=json --no-ask-user` exits cleanly and produces parseable JSONL with a final `stopReason: "end_turn"`.
+2. Copilot ACP `session/new` exposes structured `models.availableModels` metadata for the interactive picker; the REST `/models` API is retained only as fallback. Do not freeze the returned ids into source or tests.
+3. `copilot -p "say hi" --autopilot --output-format=json` exits cleanly and produces parseable JSONL with a final `stopReason: "end_turn"`.
 4. A minimal `.github/agents/aidor-test.md` is picked up via `--agent=aidor-test`.
 5. A minimal `.github/hooks/aidor.json` `preToolUse` hook can deny a tool call and the reason reaches the LLM.
 6. `--share=out.md` writes a readable transcript.
@@ -495,10 +504,7 @@ Output of the spike → pins `phase.py` argv template + `GETTING_STARTED.md`.
 
 ## 15. Open items / decisions pending
 
-- [ ] Empirical results of the M0 spike (model-string list, JSONL shape, hook decision propagation).
-- [ ] Should we use Copilot's built-in `code-review` agent as a *supplement* to `aidor-reviewer` (delegated sub-agent for mechanical diff audits)?
 - [ ] Default list of **Allowed Exceptions** per linter (grow organically from real repos).
-- [ ] Summary table final column set (confirm after first full run).
 - [ ] Whether to expose hook-based human-approval bridge in v1 (simple CLI prompt) or wait for v1.1 Telegram.
 - [ ] If Copilot CLI's `-p`/`--autopilot` round-trip overhead becomes a problem, migrate `phase.py` to ACP (long-lived session per agent). Python ACP SDK maturity at that time will decide.
 
@@ -600,11 +606,14 @@ Rounds can legitimately run **hours** (per `reqs.md` and confirmed user expectat
 
 - **2026-04-21 (c) — architecture pivot after Copilot CLI research**
   - **Reuse Copilot CLI features** instead of rebuilding them:
-    - Non-interactive driver = `copilot -p --autopilot --output-format=json --no-ask-user`.
+    - Non-interactive driver = `copilot -p --autopilot --output-format=json`.
     - Roles = Copilot **custom agents** (`.github/agents/aidor-*.md`) invoked via `--agent=`.
     - Code baseline = **AGENTS.md** managed block.
-    - Guard = `--allow-tool` / `--deny-tool` flag matrix + a single `preToolUse` / `permissionRequest` **hook script** for path containment.
-    - Watchdog simplified by `--no-ask-user` (agent cannot hang on a question) + `--continue` for post-SIGTERM resume.
+    - Guard = `--allow-all-tools --allow-all-paths` plus deny-by-default
+      hook policy from YAML (`tool_allowlist.yml`, `shell_allowlist.yml`) for
+      tool, shell, MCP, path, memory, and role checks.
+    - `ask_user` stays enabled and is intercepted by hooks; watchdog timers
+      pause while the hook waits for human input.
     - Per-round transcripts = `--share`.
     - Summary metrics = parse Copilot's OpenTelemetry JSONL file exporter — no custom scraping.
   - **Rejected for v1** (may revisit):
@@ -612,3 +621,22 @@ Rounds can legitimately run **hours** (per `reqs.md` and confirmed user expectat
     - LangGraph / AutoGen / CrewAI multi-agent frameworks (overkill, API-centric, not CLI-centric).
     - ACP long-lived sessions (nice-to-have; Python SDK not mature; `-p` is enough for v1).
   - Module layout revised accordingly (§12): `phase.py`, `bootstrap.py`, `guard_profile.py`, `telemetry.py` replace the old `agent.py` / `copilot_backend.py` / `guard.py` interception stack.
+
+- **2026-05-17 — interactive hardening and policy fixes**
+  - `aidor run --interactive` prompts for repo, coder/reviewer model, reasoning
+    effort, max rounds, idle timeout, round timeout, and confirmation. Model
+    choices come from Copilot ACP metadata first and the live models API second,
+    are sorted by id, and are cached for 24 hours by default. `--model-cache-ttl-hours 0`
+    forces refresh. No hard-coded model ids are allowed in source or tests.
+  - The coder cannot edit aidor policy/orchestration files; the reviewer may do
+    so only after careful consideration and should ask the human when in doubt.
+  - Agents ignore git submodule code issues and only handle parent-repo
+    integration, pinning, build, lint, test, or coverage wiring.
+  - Agents must scan the available tool list for configured MCPs and use them
+    when relevant. MCP-specific names are policy YAML data, not Python logic.
+    Denied MCP attempts are logged and summarized with allowlist guidance.
+  - `State.save()` retries transient Windows `PermissionError` around
+    `os.replace`; if persistence still fails, the orchestrator exits with code
+    4 before launching another phase.
+  - `.aidor/ABORT` is one-shot. A fresh run clears a stale marker after
+    bootstrap and before the first phase starts.

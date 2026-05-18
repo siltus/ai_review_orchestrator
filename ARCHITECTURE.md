@@ -69,18 +69,19 @@ are written under `.aidor/` inside the target repo.
 
 | Module | Responsibility |
 | --- | --- |
-| `cli.py` | Typer entry point. Subcommands: `run`, `status`, `summary`, `clean`, `doctor`, `abort`. |
+| `cli.py` | Typer entry point. Subcommands: `run`, `status`, `summary`, `clean`, `doctor`, `abort`. `run --interactive` prompts for repo, models, effort, rounds, and timeouts; it reuses a cached Copilot model catalog for 24 hours by default and refreshes through ACP metadata first / the live models API second when needed. |
 | `config.py` | `RunConfig` dataclass + path derivations. Single source of truth for tunables. |
 | `bootstrap.py` | Idempotent on-disk setup: `AGENTS.md` managed block, `.github/agents/*.md`, `.github/hooks/aidor.json` (machine-specific, gitignored), `.aidor/` skeleton, `allowed_exceptions.yml` seed, config snapshot. |
-| `orchestrator.py` | The state machine. Drives `PhaseRunner` per phase, parses review footers, decides next phase, handles convergence + readiness gate, runs the human-watcher task. Persists `state.json` after every transition. |
+| `orchestrator.py` | The state machine. Drives `PhaseRunner` per phase, parses review footers, decides next phase, handles convergence + readiness gate, runs the human-watcher task, clears stale one-shot `.aidor/ABORT` markers at startup, and fails closed if `state.json` cannot be persisted before another phase would launch. |
 | `phase.py` | One Copilot subprocess. Builds argv (`--agent`, `--model`, `--share`, `--output-format=json`, `--allow-all-tools` + `--allow-all-paths` from `guard_profile`), spawns it, streams stdout JSONL → events, streams stderr to disk, runs an idle + round-timeout watchdog (pause-aware while a hook is waiting on a human), restarts via `--continue` with exponential back-off. |
 | `guard_profile.py` | Returns the spawn flags (`--allow-all-tools --allow-all-paths`); see the module docstring for why the historical `--allow-tool` / `--deny-tool` matrix was abandoned. The actual security policy lives in `hook_resolver.py` and `policies/*.yml`. |
-| `hook_resolver.py` | Standalone process invoked by Copilot at every hook event. Enforces the **deny-by-default tool allowlist** (`policies/tool_allowlist.yml` + `.aidor/tool_allowlist.yml`), the **shell-clause allowlist** (`policies/shell_allowlist.yml` + `.aidor/shell_allowlist.yml`), and **path containment** for write/edit/create and shell tokens. Also implements the four-step `ask_user` resolver pipeline (policy → state → human → cancel) and writes the audit log + breadcrumbs. |
+| `hook_resolver.py` | Standalone process invoked by Copilot at every hook event. Enforces the **deny-by-default tool allowlist** (`policies/tool_allowlist.yml` + `.aidor/tool_allowlist.yml`), the **shell-clause allowlist** (`policies/shell_allowlist.yml` + `.aidor/shell_allowlist.yml`), **path containment** for write/edit/create and shell tokens, role-scoped protected paths (e.g. coder cannot edit `.aidor/allowed_exceptions.yml` or `.aidor/reviews/**`), and YAML-driven MCP policy with denied MCP attempts logged to `.aidor/logs/failed_mcp_tools.jsonl`. Also implements the four-step `ask_user` resolver pipeline (policy → state → human → cancel) and writes the audit log + breadcrumbs. |
+| `model_history.py` | Live Copilot model discovery and recent-model cache for `run --interactive`. Reads Copilot ACP `session/new` model metadata first, then falls back to the live `/models` API; caches the catalog with a configurable TTL (`--model-cache-ttl-hours`, default 24 h) and never ships a hard-coded model list. |
 | `review_store.py` | Numbered file allocation + AIDOR-footer parser/validator. |
-| `state.py` | `State`, `RoundRecord`, `PhaseRecord`, `RestartRecord`. Atomic save/load. |
+| `state.py` | `State`, `RoundRecord`, `PhaseRecord`, `RestartRecord`. Atomic save/load with bounded retries around transient Windows `PermissionError` from `os.replace`. |
 | `telemetry.py` | Best-effort parser for the Copilot OTel JSONL file exporter (tokens, cost, tool calls, turns). |
 | `wake_lock.py` | Cross-platform sleep inhibitor (Win: `SetThreadExecutionState`; Linux: `systemd-inhibit`; macOS: `caffeinate`). |
-| `summary.py` | The Rich table + `summary.md` renderer consumed by `aidor summary` and the end-of-run print. |
+| `summary.py` | The Rich table + `summary.md` renderer consumed by `aidor summary` and the end-of-run print, including denied MCP tool counts and allowlist guidance. |
 
 Static assets shipped with the wheel:
 
@@ -107,6 +108,8 @@ Everything is written into `<repo>/.aidor/` (gitignored by default):
 ├── logs/
 │   ├── orchestrator.log    # hook breadcrumbs + orchestrator events
 │   ├── qa.jsonl            # one line per ask_user resolution
+│   ├── failed_mcp_tools.jsonl
+│   │                       # denied MCP tools + denial reasons
 │   ├── otel-<role>-<NNNN>.jsonl
 │   └── <role>-<NNNN>.stderr
 ├── pending/                # IPC scratch dir for human questions:
@@ -125,8 +128,16 @@ Everything is written into `<repo>/.aidor/` (gitignored by default):
                   │  bootstrap    │
                   └──────┬────────┘
                          │
+                 clear stale ABORT
+                         │
+                 persist state.json
+                         │
+        ┌────────────────┴────────────────┐
+        │ save failure → exit code 4      │
+        └────────────────┬────────────────┘
+                         │
                          ▼
-              ┌──────────────────────┐
+               ┌──────────────────────┐
               │ round N: review      │
               │   (aidor-reviewer)   │
               └──────────┬───────────┘

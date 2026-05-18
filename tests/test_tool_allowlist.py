@@ -34,13 +34,19 @@ def test_tool_allowlist_includes_apply_patch(tmp_path: Path):
     assert "apply_patch" in names
 
 
-def test_tool_allowlist_includes_github_mcp_web_search(tmp_path: Path):
-    """The GitHub MCP server's namespaced ``github-mcp-server/web_search``
-    is the read-only search variant the reviewer reaches for to check
-    upstream CVE references / issue threads. Bare ``web_search`` does
-    not match Copilot's ``<server>/<tool>`` namespacing for MCP tools,
-    so the namespaced form must be on the allowlist explicitly."""
-    from aidor.hook_resolver import _load_tool_allowlist
+def test_default_mcp_policy_entries_are_allowlisted(tmp_path: Path):
+    """Every default MCP/tool classification must refer to allowed tools.
 
-    names = _load_tool_allowlist(tmp_path)
-    assert "github-mcp-server/web_search" in names
+    External MCP server details live in YAML policy data; Python only checks
+    that the configured policy is internally consistent.
+    """
+    from aidor.hook_resolver import _load_tool_policy
+
+    policy = _load_tool_policy(tmp_path)
+
+    assert policy.mcp_tools
+    assert policy.mcp_tool_patterns
+    assert policy.mcp_tools <= policy.tools
+    assert policy.write_tools <= policy.tools
+    assert policy.path_scoped_tools <= policy.tools
+    assert policy.memory_scoped_tools <= policy.tools

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -23,6 +24,9 @@ OverallStatus = Literal[
     "aborted",
     "failed",
 ]
+
+STATE_REPLACE_ATTEMPTS = 5
+STATE_REPLACE_RETRY_DELAY_S = 0.1
 
 
 @dataclass
@@ -89,7 +93,14 @@ class State:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(self.to_json())
-            os.replace(tmp, path)
+            for attempt in range(STATE_REPLACE_ATTEMPTS):
+                try:
+                    os.replace(tmp, path)
+                    break
+                except PermissionError:
+                    if attempt == STATE_REPLACE_ATTEMPTS - 1:
+                        raise
+                    time.sleep(STATE_REPLACE_RETRY_DELAY_S)
         except Exception:
             try:
                 os.unlink(tmp)

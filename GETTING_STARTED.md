@@ -64,6 +64,19 @@ venv (so the hook works without depending on `PATH`).
 
 ## Real run
 
+Interactive setup asks for the major settings before launch. It caches
+Copilot's structured model catalog for 24 hours by default (override with
+`--model-cache-ttl-hours`; use `0` to force refresh), sorts it by model id, then
+presents arrow-key menus for coder/reviewer models and reasoning effort. The
+catalog is discovered from Copilot ACP metadata first and the live models API
+second; aidor does not keep a hard-coded list of model ids.
+
+```pwsh
+aidor run --interactive
+```
+
+For scripted runs, pass the model ids explicitly:
+
 ```pwsh
 aidor run `
     --coder gpt-5.2 `
@@ -85,6 +98,8 @@ Useful flags:
 | `--no-keep-awake`          | (off)  | Don't take a wake-lock. |
 | `--resume`                 | off    | Pick up from existing `.aidor/state.json`. |
 | `--copilot-binary PATH`    | `copilot` | Override the Copilot CLI binary (rarely needed). |
+| `--interactive` / `-i`     | off    | Prompt for repo, coder/reviewer models, reasoning effort, max rounds, and timeouts. Requires a TTY and a token usable by Copilot (`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth login`) when the cached model catalog is missing or expired. |
+| `--model-cache-ttl-hours N` | 24     | Reuse the cached Copilot model catalog for this many hours in interactive mode. Use `0` to force a refresh every time. |
 | `--instructions TEXT`      | (none) | Extra free-form instructions injected into BOTH reviewer and coder prompts every round (e.g. `"extra effort on security"`, `"make sure it's cross-platform"`). |
 | `--instructions-file PATH` | (none) | Same as `--instructions`, but read from a UTF-8 file. Mutually exclusive with `--instructions`. |
 | `--reviewer-instructions TEXT` / `--reviewer-instructions-file PATH` | (none) | Extra instructions appended to the reviewer prompt only (additive on top of `--instructions`). |
@@ -95,7 +110,12 @@ Useful flags:
 While running:
 
 - Live status & per-phase events scroll on the terminal.
-- `Ctrl-C` writes the abort marker and shuts down cleanly.
+- `Ctrl-C` writes the abort marker and shuts down cleanly. The marker is
+  one-shot: a later `aidor run` clears a stale `.aidor/ABORT` after bootstrap
+  and before launching the first phase.
+- If `.aidor/state.json` cannot be saved after the bounded retry loop, aidor
+  exits with code 4 before launching another phase, so agents never continue
+  against stale state.
 - If the coder calls `ask_user`, the orchestrator first tries to answer
   from policy (`question_classes.yml`). In v0.1 the state-derived answer
   step (§9.4 step 2 of `plan.md`) is scaffolding only — it always falls
@@ -117,9 +137,14 @@ All artefacts live under `.aidor/`:
 .aidor/transcripts/<role>-<NNNN>.md   ← Copilot --share log
 .aidor/logs/orchestrator.log          ← hook breadcrumbs
 .aidor/logs/qa.jsonl                  ← every ask_user resolution
+.aidor/logs/failed_mcp_tools.jsonl    ← denied MCP tool attempts + reasons
 .aidor/state.json                     ← machine state
 .aidor/summary.md                     ← final human-readable summary
 ```
+
+Denied MCP tools are also surfaced in `aidor summary` with YAML allowlist
+guidance. Treat that as a policy prompt, not a reason to hard-code a specific
+external MCP in Python.
 
 ## Stopping mid-run
 

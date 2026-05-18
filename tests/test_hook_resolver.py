@@ -8,6 +8,8 @@ import json
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from aidor.hook_resolver import (
     _extract_path_tokens,
     _extract_question,
@@ -1215,6 +1217,267 @@ def test_apply_patch_allowed_for_in_repo_paths(tmp_path: Path):
         "*** End Patch\n"
     )
     assert _apply_patch_decision(tmp_path, body) is None
+
+
+def _pretool_decision(repo: Path, tool: str, args: dict[str, object]):
+    from aidor.hook_resolver import _on_pre_tool_use
+
+    return _on_pre_tool_use(
+        "preToolUse",
+        {
+            "toolName": tool,
+            "toolArgs": args,
+            "cwd": str(repo),
+        },
+    )
+
+
+def _write_example_mcp_policy(repo: Path) -> None:
+    aidor_dir = repo / ".aidor"
+    aidor_dir.mkdir(exist_ok=True)
+    (aidor_dir / "tool_allowlist.yml").write_text(
+        """
+tools:
+  - example-mcp-find_symbol
+  - example-mcp-find_referencing_symbols
+  - example-mcp-replace_content
+  - example-mcp-read_memory
+mcp_tool_patterns:
+  - example-mcp-*
+mcp_tools:
+  - example-mcp-find_symbol
+  - example-mcp-find_referencing_symbols
+  - example-mcp-replace_content
+  - example-mcp-read_memory
+write_tools:
+  - example-mcp-replace_content
+path_scoped_tools:
+  - example-mcp-find_symbol
+  - example-mcp-find_referencing_symbols
+  - example-mcp-replace_content
+path_arg_keys:
+  - relative_path
+deny_path_prefixes:
+  - '<ext'
+memory_scoped_tools:
+  - example-mcp-read_memory
+memory_arg_keys:
+  - memory_name
+memory_forbidden_values:
+  - global
+memory_forbidden_prefixes:
+  - global/
+memory_deny_absolute: true
+memory_deny_parent_segments: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+
+def test_mcp_path_scoped_read_allowed_for_in_repo_path(tmp_path: Path):
+    _write_example_mcp_policy(tmp_path)
+
+    assert (
+        _pretool_decision(
+            tmp_path,
+            "example-mcp-find_symbol",
+            {"name_path_pattern": "_pick_effort", "relative_path": "src/aidor/cli.py"},
+        )
+        is None
+    )
+
+
+def test_mcp_path_scoped_read_denies_outside_repo_path(tmp_path: Path):
+    _write_example_mcp_policy(tmp_path)
+
+    decision = _pretool_decision(
+        tmp_path,
+        "example-mcp-find_symbol",
+        {"name_path_pattern": "_pick_effort", "relative_path": "..\\outside.py"},
+    )
+
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+    assert "outside the repo" in decision["permissionDecisionReason"]
+
+
+def test_mcp_path_scoped_read_denies_external_dependency_path(tmp_path: Path):
+    _write_example_mcp_policy(tmp_path)
+
+    decision = _pretool_decision(
+        tmp_path,
+        "example-mcp-find_referencing_symbols",
+        {"name_path": "Thing", "relative_path": "<ext 1>"},
+    )
+
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+    assert "external path-like tool argument" in decision["permissionDecisionReason"]
+
+
+def test_mcp_write_tool_uses_role_protected_paths(monkeypatch, tmp_path: Path):
+    _write_example_mcp_policy(tmp_path)
+    monkeypatch.setenv("AIDOR_REPO", str(tmp_path))
+    monkeypatch.setenv("AIDOR_ROLE", "coder")
+
+    decision = _pretool_decision(
+        tmp_path,
+        "example-mcp-replace_content",
+        {
+            "relative_path": ".aidor/allowed_exceptions.yml",
+            "mode": "literal",
+            "needle": "x",
+            "repl": "y",
+        },
+    )
+
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+    assert "allowed_exceptions.yml" in decision["permissionDecisionReason"]
+
+
+def test_mcp_tool_denial_is_logged_for_summary(tmp_path: Path):
+    decision = _pretool_decision(tmp_path, "example-mcp-server-create_pr", {})
+
+    assert decision is not None
+    log_path = tmp_path / ".aidor" / "logs" / "failed_mcp_tools.jsonl"
+    body = log_path.read_text(encoding="utf-8")
+    assert "example-mcp-server-create_pr" in body
+
+
+def test_memory_scoped_mcp_tool_rejects_global_namespace(tmp_path: Path):
+    _write_example_mcp_policy(tmp_path)
+
+    decision = _pretool_decision(
+        tmp_path,
+        "example-mcp-read_memory",
+        {"memory_name": "global/project-priority"},
+    )
+
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+    assert "outside permitted memory namespace" in decision["permissionDecisionReason"]
+
+
+def test_coder_cannot_write_allowed_exceptions(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AIDOR_REPO", str(tmp_path))
+    monkeypatch.setenv("AIDOR_ROLE", "coder")
+
+    decision = _pretool_decision(
+        tmp_path, "write", {"path": ".aidor/allowed_exceptions.yml", "content": "x"}
+    )
+
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+    assert "allowed_exceptions.yml" in decision["permissionDecisionReason"]
+    assert "coder" in decision["permissionDecisionReason"]
+
+
+def test_coder_cannot_rewrite_review_file(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AIDOR_REPO", str(tmp_path))
+    monkeypatch.setenv("AIDOR_ROLE", "coder")
+
+    decision = _pretool_decision(
+        tmp_path, "write", {"path": ".aidor/reviews/review-0001-x.md", "content": "clean"}
+    )
+
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+    assert ".aidor/reviews/" in decision["permissionDecisionReason"]
+
+
+def test_coder_may_write_fixes_summary(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AIDOR_REPO", str(tmp_path))
+    monkeypatch.setenv("AIDOR_ROLE", "coder")
+
+    assert (
+        _pretool_decision(
+            tmp_path,
+            "write",
+            {"path": ".aidor/fixes/fixes-0001-x.md", "content": "fixed"},
+        )
+        is None
+    )
+
+
+def test_reviewer_may_update_allowed_exceptions(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AIDOR_REPO", str(tmp_path))
+    monkeypatch.setenv("AIDOR_ROLE", "reviewer")
+
+    assert (
+        _pretool_decision(
+            tmp_path,
+            "write",
+            {"path": ".aidor/allowed_exceptions.yml", "content": "exceptions: []"},
+        )
+        is None
+    )
+
+
+def test_reviewer_cannot_rewrite_coder_fixes(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AIDOR_REPO", str(tmp_path))
+    monkeypatch.setenv("AIDOR_ROLE", "reviewer")
+
+    decision = _pretool_decision(
+        tmp_path, "write", {"path": ".aidor/fixes/fixes-0001-x.md", "content": "oops"}
+    )
+
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+    assert ".aidor/fixes/" in decision["permissionDecisionReason"]
+
+
+def test_role_protection_noops_when_role_unset(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AIDOR_REPO", str(tmp_path))
+    monkeypatch.delenv("AIDOR_ROLE", raising=False)
+
+    assert (
+        _pretool_decision(
+            tmp_path,
+            "write",
+            {"path": ".aidor/allowed_exceptions.yml", "content": "exceptions: []"},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Set-Content -Path .aidor/allowed_exceptions.yml -Value x",
+        "Out-File -FilePath .aidor/allowed_exceptions.yml -InputObject x",
+        "echo x > .aidor/allowed_exceptions.yml",
+        "tee .aidor/allowed_exceptions.yml",
+        "sed -i s/a/b/ .aidor/allowed_exceptions.yml",
+    ],
+)
+def test_coder_shell_write_to_protected_file_denied(monkeypatch, tmp_path: Path, command: str):
+    monkeypatch.setenv("AIDOR_REPO", str(tmp_path))
+    monkeypatch.setenv("AIDOR_ROLE", "coder")
+
+    decision = _pretool_decision(tmp_path, "powershell", {"command": command})
+
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+    assert "allowed_exceptions.yml" in decision["permissionDecisionReason"]
+
+
+def test_coder_apply_patch_to_protected_file_denied(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AIDOR_REPO", str(tmp_path))
+    monkeypatch.setenv("AIDOR_ROLE", "coder")
+    body = (
+        "*** Begin Patch\n"
+        "*** Update File: .aidor/allowed_exceptions.yml\n"
+        "@@\n"
+        "+exceptions: []\n"
+        "*** End Patch\n"
+    )
+
+    decision = _apply_patch_decision(tmp_path, body)
+
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+    assert "allowed_exceptions.yml" in decision["permissionDecisionReason"]
 
 
 def test_apply_patch_blocked_for_absolute_path_outside_repo(tmp_path: Path):

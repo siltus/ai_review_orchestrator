@@ -124,6 +124,36 @@ def test_safe_stash_and_worktree_still_allowed(tmp_path: Path, command: str):
     assert _shell_decision(tmp_path, command) is None, command
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git submodule",
+        "git submodule status",
+        "git submodule status --recursive",
+        "git submodule status --cached --quiet",
+    ],
+)
+def test_readonly_submodule_status_allowed(tmp_path: Path, command: str):
+    """Agents must be able to enumerate submodules so they can exclude
+    submodule paths from review / lint / coverage scope."""
+    assert _shell_decision(tmp_path, command) is None, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git submodule update --init",
+        "git submodule add https://example.invalid/repo vendor/repo",
+        "git submodule deinit vendor/repo",
+        "git submodule foreach git status",
+    ],
+)
+def test_mutating_submodule_commands_denied(tmp_path: Path, command: str):
+    decision = _shell_decision(tmp_path, command)
+    assert decision is not None, f"expected deny for {command!r}"
+    assert decision["permissionDecision"] == "deny"
+
+
 # ---- python launchers: pyright is part of the curated -m set -----------
 
 
