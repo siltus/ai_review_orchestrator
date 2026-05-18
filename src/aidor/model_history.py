@@ -254,7 +254,7 @@ def _discover_models_via_acp(
             "initialize",
             {
                 "protocolVersion": 1,
-                "clientInfo": {"name": "aidor", "version": "1.1.0"},
+                "clientInfo": {"name": "aidor", "version": "1.2.0"},
                 "clientCapabilities": {
                     "fs": {"readTextFile": False, "writeTextFile": False},
                     "terminal": False,
