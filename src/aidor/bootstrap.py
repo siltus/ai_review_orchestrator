@@ -1,7 +1,9 @@
-"""Idempotent bootstrap of aidor artifacts inside a target repo.
+"""Idempotent bootstrap of aidor runtime artifacts inside a target repo.
 
-Writes / refreshes:
-  - AGENTS.md                                  (managed block only)
+Writes / refreshes while a run is active:
+  - AGENTS.md                                  (temporary runtime contract;
+                                                any pre-existing file is backed
+                                                up and restored on teardown)
   - .github/agents/aidor-coder.md              (refreshed if stale; the
                                                 packaged template is the
                                                 source of truth)
@@ -21,15 +23,14 @@ Writes / refreshes:
   - .aidor/{reviews,fixes,transcripts,logs}/   (created)
   - .aidor/allowed_exceptions.yml              (seeded if absent)
   - .aidor/config.snapshot.toml                (always overwritten)
-  - .gitignore entries for `.aidor/` and `.github/hooks/aidor.json`
-                                               (appended if missing; the
-                                                hooks file contains a
-                                                machine-specific absolute
-                                                Python path and must not
-                                                be committed)
+  - .gitignore entries for `.aidor/`, `.github/hooks/aidor.json`, and
+                                                `.github/aidor-backups/`
+                                                (appended if missing; the
+                                                hooks file and runtime backups
+                                                must not be committed)
 
-Template sources live under `aidor/agent_templates/` and `aidor/policies/`
-(shipped with the wheel).
+Template sources live under `aidor/agent_templates/`, `aidor/resources/`, and
+`aidor/policies/` (shipped with the wheel).
 """
 
 from __future__ import annotations
@@ -41,8 +42,10 @@ from pathlib import Path
 
 from aidor.config import RunConfig
 
-MANAGED_START = "<!-- AIDOR:MANAGED-BLOCK-START -->"
-MANAGED_END = "<!-- AIDOR:MANAGED-BLOCK-END -->"
+RUNTIME_AGENTS_TEMPLATE = "resources/aidor_runtime_agents.md"
+AGENTS_BACKUP_DIR = Path(".github") / "aidor-backups"
+AGENTS_BACKUP_META = "AGENTS.md.meta.json"
+AGENTS_BACKUP_ORIGINAL = "AGENTS.md.original"
 
 
 def _read_template(relpath: str) -> str:
@@ -50,6 +53,113 @@ def _read_template(relpath: str) -> str:
     package, _, name = relpath.partition("/")
     pkg_ref = resources.files(f"aidor.{package}")
     return (pkg_ref / name).read_text(encoding="utf-8")
+
+
+def _backup_dir(repo: Path) -> Path:
+    return repo / AGENTS_BACKUP_DIR
+
+
+def _backup_meta_path(repo: Path) -> Path:
+    return _backup_dir(repo) / AGENTS_BACKUP_META
+
+
+def _backup_original_path(repo: Path) -> Path:
+    return _backup_dir(repo) / AGENTS_BACKUP_ORIGINAL
+
+
+def _read_backup_meta(repo: Path) -> dict[str, object] | None:
+    meta_path = _backup_meta_path(repo)
+    if not meta_path.exists():
+        return None
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_backup_meta(repo: Path, *, existed: bool) -> None:
+    meta_path = _backup_meta_path(repo)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(
+        json.dumps({"existed": existed}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _install_runtime_agents_md(repo: Path, runtime_contract: str) -> list[str]:
+    """Temporarily install aidor's runtime AGENTS.md in the target repo.
+
+    A pre-existing project AGENTS.md is backed up under `.github/aidor-backups/`
+    and restored by teardown. Repeated bootstrap calls during the same run keep
+    the first backup intact unless the operator has replaced AGENTS.md with
+    non-runtime content after a crashed run; in that case the new human-authored
+    file becomes the backup source.
+    """
+    actions: list[str] = []
+    agents_md = repo / "AGENTS.md"
+    original_path = _backup_original_path(repo)
+    meta = _read_backup_meta(repo)
+
+    current: str | None = None
+    if agents_md.exists():
+        current = agents_md.read_text(encoding="utf-8")
+    elif meta and meta.get("existed") is True and original_path.exists():
+        current = original_path.read_text(encoding="utf-8")
+
+    if meta is not None and current == runtime_contract:
+        return actions
+
+    _backup_dir(repo).mkdir(parents=True, exist_ok=True)
+    if current is None:
+        if original_path.exists():
+            original_path.unlink()
+        _write_backup_meta(repo, existed=False)
+        actions.append("recorded missing AGENTS.md for runtime restore")
+    else:
+        original_path.write_text(current, encoding="utf-8")
+        _write_backup_meta(repo, existed=True)
+        actions.append("backed up AGENTS.md to .github/aidor-backups/AGENTS.md.original")
+
+    if current != runtime_contract:
+        agents_md.write_text(runtime_contract, encoding="utf-8")
+        actions.append("installed runtime AGENTS.md")
+    return actions
+
+
+def _restore_runtime_agents_md(repo: Path) -> list[str]:
+    """Restore or remove the temporary runtime AGENTS.md if bootstrap installed it."""
+    meta_path = _backup_meta_path(repo)
+    if not meta_path.exists():
+        return []
+
+    meta = _read_backup_meta(repo)
+    if meta is None:
+        raise RuntimeError(f"invalid aidor AGENTS.md backup metadata: {meta_path}")
+
+    actions: list[str] = []
+    agents_md = repo / "AGENTS.md"
+    original_path = _backup_original_path(repo)
+    if meta.get("existed") is True:
+        if not original_path.exists():
+            raise FileNotFoundError(f"missing AGENTS.md backup: {original_path}")
+        agents_md.write_text(original_path.read_text(encoding="utf-8"), encoding="utf-8")
+        actions.append("restored AGENTS.md from .github/aidor-backups/AGENTS.md.original")
+    else:
+        if agents_md.exists():
+            agents_md.unlink()
+            actions.append("removed runtime AGENTS.md")
+
+    for path in (original_path, meta_path):
+        if path.exists():
+            path.unlink()
+    backup_dir = _backup_dir(repo)
+    try:
+        backup_dir.rmdir()
+        actions.append("removed empty .github/aidor-backups/")
+    except OSError:
+        pass
+    return actions
 
 
 def _render_hooks_json() -> str:
@@ -100,7 +210,8 @@ def _shell_quote(path: str) -> str:
 
 def bootstrap(config: RunConfig) -> list[str]:
     """Write/refresh all aidor artifacts. Returns a list of human-readable
-    actions performed (for logging)."""
+    actions performed (for logging).
+    """
     actions: list[str] = []
 
     repo = config.repo
@@ -144,16 +255,9 @@ def bootstrap(config: RunConfig) -> list[str]:
         hooks_path.write_text(new_hooks, encoding="utf-8")
         actions.append(f"wrote {hooks_path.relative_to(repo).as_posix()}")
 
-    # ---- AGENTS.md managed block ------------------------------------------
-    managed_block = _read_template("agent_templates/agents_md_block.md")
-    agents_md = repo / "AGENTS.md"
-    new_agents_md = _merge_managed_block(
-        existing=agents_md.read_text(encoding="utf-8") if agents_md.exists() else "",
-        block=managed_block,
-    )
-    if not agents_md.exists() or agents_md.read_text(encoding="utf-8") != new_agents_md:
-        agents_md.write_text(new_agents_md, encoding="utf-8")
-        actions.append(f"updated {agents_md.relative_to(repo).as_posix()}")
+    # ---- Runtime AGENTS.md ------------------------------------------------
+    runtime_contract = _read_template(RUNTIME_AGENTS_TEMPLATE)
+    actions.extend(_install_runtime_agents_md(repo, runtime_contract))
 
     # ---- allowed_exceptions.yml (seed if absent) --------------------------
     if not config.allowed_exceptions_path.exists():
@@ -177,14 +281,18 @@ def bootstrap(config: RunConfig) -> list[str]:
     #                                         them in causes drift between
     #                                         operator branches and pollutes
     #                                         PRs
+    #   - `.github/aidor-backups/`          temporary AGENTS.md backup state
     # Bootstrap manages all of these so a fresh target repo cannot
-    # accidentally commit any of them.
+    # accidentally commit any of them. It intentionally does NOT ignore
+    # AGENTS.md itself, because a pre-existing tracked project AGENTS.md is
+    # restored on teardown.
     gi = repo / ".gitignore"
     needed_entries = (
         ".aidor/",
         ".github/hooks/aidor.json",
         ".github/agents/aidor-coder.md",
         ".github/agents/aidor-reviewer.md",
+        ".github/aidor-backups/",
     )
     gi_actions = _ensure_gitignore_entries(gi, needed_entries)
     actions.extend(gi_actions)
@@ -205,37 +313,16 @@ def teardown(config: RunConfig) -> list[str]:
 
 
 def teardown_repo(repo: Path) -> list[str]:
-    """Remove every file ``bootstrap`` writes outside ``.aidor/``.
+    """Remove every runtime file ``bootstrap`` writes outside ``.aidor/``.
 
-    Removes:
-
-    * ``.github/hooks/aidor.json`` — the active enforcement hook. Left
-      behind, it routes follow-up interactive ``copilot`` sessions in
-      the same repo through ``aidor.hook_resolver`` and denies normal
-      operator commands like ``Get-Content D:\\TEMP\\copilot-tool-output-*.txt``
-      because the path is outside the repo root.
-    * ``.github/agents/aidor-coder.md`` and ``aidor-reviewer.md`` —
-      operational instructions Copilot picks up automatically when the
-      operator opens a follow-up interactive session in the repo. They
-      shape the model's behaviour even though they don't *enforce*
-      anything, so an aidor-driven run leaving them behind makes
-      manual sessions inherit aidor's contract whether the operator
-      wants it or not.
-    * ``.github/hooks/`` and ``.github/agents/`` directories if empty
-      after the removals (preserves unrelated files an operator may
-      have placed alongside ours).
-
-    Never touches:
-
-    * ``.aidor/``      — run artefacts the operator wants to keep
-    * ``AGENTS.md``    — passive contract document; the human-edited
-                         portions outside the managed block are theirs
-    * ``.gitignore``   — entries are harmless when the files are gone
-
-    Idempotent: missing files are silently skipped. Returns a list of
-    human-readable actions performed (empty if nothing was removed).
+    Restores a pre-existing project ``AGENTS.md`` from
+    ``.github/aidor-backups/`` or removes the temporary runtime file when the
+    target repo did not have one. Then removes aidor's generated hook and agent
+    files. Idempotent when no aidor bootstrap state exists.
     """
     actions: list[str] = []
+    actions.extend(_restore_runtime_agents_md(repo))
+
     targets = (
         repo / ".github" / "hooks" / "aidor.json",
         repo / ".github" / "agents" / "aidor-coder.md",
@@ -263,6 +350,7 @@ def teardown_repo(repo: Path) -> list[str]:
                 pass
         except OSError:  # pragma: no cover - defensive
             pass
+
     return actions
 
 
@@ -289,28 +377,6 @@ def _ensure_gitignore_entries(gitignore: Path, entries: tuple[str, ...]) -> list
         gitignore.write_text("\n".join(entries) + "\n", encoding="utf-8")
         actions.append("created .gitignore with " + ", ".join(entries))
     return actions
-
-
-def _merge_managed_block(*, existing: str, block: str) -> str:
-    """Insert or replace the MANAGED block inside an existing AGENTS.md.
-
-    If the existing file has no managed markers, the block is appended to the
-    end (preceded by a blank line). If it has markers, the content between
-    them is replaced atomically.
-    """
-    if not existing.strip():
-        return block if block.endswith("\n") else block + "\n"
-
-    start_idx = existing.find(MANAGED_START)
-    end_idx = existing.find(MANAGED_END)
-    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-        end_idx_full = end_idx + len(MANAGED_END)
-        prefix = existing[:start_idx].rstrip() + ("\n\n" if existing[:start_idx].strip() else "")
-        suffix = existing[end_idx_full:].lstrip("\n")
-        merged = prefix + block.strip() + ("\n\n" + suffix if suffix else "\n")
-        return merged
-    sep = "\n" if existing.endswith("\n") else "\n\n"
-    return existing + sep + block.strip() + "\n"
 
 
 def _render_config_snapshot(config: RunConfig) -> str:

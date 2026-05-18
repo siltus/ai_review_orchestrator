@@ -37,7 +37,7 @@ def test_pre_tool_use_denies_non_allowlisted_tool(tmp_path: Path):
     tool fell through unchecked.
     """
     decision = _pre_tool_use(
-        "github-mcp-server-create_pull_request",
+        "example-mcp-server-create_pull_request",
         {"title": "x"},
         repo=tmp_path,
     )
@@ -63,20 +63,20 @@ def test_pre_tool_use_empty_tool_name_falls_through(tmp_path: Path):
 def test_user_yaml_extends_tool_allowlist(tmp_path: Path):
     (tmp_path / ".aidor").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".aidor" / "tool_allowlist.yml").write_text(
-        "tools:\n  - my_custom_tool\n  - github-mcp-server-list_issues\n",
+        "tools:\n  - my_custom_tool\n  - example-mcp-server-list_issues\n",
         encoding="utf-8",
     )
     # The user-extended tool is now allowed.
     assert _pre_tool_use("my_custom_tool", {}, repo=tmp_path) is None
-    assert _pre_tool_use("github-mcp-server-list_issues", {}, repo=tmp_path) is None
+    assert _pre_tool_use("example-mcp-server-list_issues", {}, repo=tmp_path) is None
     # Bundled defaults still apply: bash is still allowlisted.
     # (The shell allowlist may still deny on content; that's a separate layer.)
     # Other arbitrary tools still denied.
-    assert _pre_tool_use("github-mcp-server-create_pull_request", {}, repo=tmp_path) is not None
+    assert _pre_tool_use("example-mcp-server-create_pull_request", {}, repo=tmp_path) is not None
 
 
 def test_permission_request_denies_non_allowlisted(tmp_path: Path):
-    payload = {"cwd": str(tmp_path), "toolName": "github-mcp-server-create_pr"}
+    payload = {"cwd": str(tmp_path), "toolName": "example-mcp-server-create_pr"}
     decision = hr._on_permission_request("permissionRequest", payload)
     assert decision is not None
     assert decision["permissionDecision"] == "deny"
@@ -365,7 +365,7 @@ def test_main_emits_decision_for_pre_tool_use_deny(monkeypatch, tmp_path: Path):
         "preToolUse",
         {
             "cwd": str(tmp_path),
-            "toolName": "github-mcp-server-create_pr",
+            "toolName": "example-mcp-server-create_pr",
             "toolArgs": {},
         },
     )

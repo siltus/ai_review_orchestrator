@@ -32,7 +32,8 @@
 Copilot CLI in an automated review↔fix loop. It is a thin supervisor around
 `copilot -p --autopilot --output-format=json` that:
 
-- bootstraps two custom agents + hooks + an `AGENTS.md` managed block;
+- bootstraps two custom agents, hooks, and a temporary runtime `AGENTS.md`
+  copied from `src/aidor/resources/aidor_runtime_agents.md`;
 - runs reviewer and coder phases in alternation until convergence or a
   hard budget is hit;
 - enforces a **deny-by-default Guard** at the Copilot `preToolUse` /
@@ -63,6 +64,17 @@ pip install -e ".[dev]"
 ```
 aidor doctor
 aidor run --coder <copilot-model-id> --reviewer <copilot-model-id>
+```
+
+Prefer not to remember model ids? Use interactive setup. It caches Copilot's
+structured model catalog for 24 hours by default (override with
+`--model-cache-ttl-hours`; use `0` to force refresh), sorts it by model id, then
+lets you select coder/reviewer models and reasoning effort with arrow-key menus.
+The catalog is loaded from Copilot ACP metadata first, with the live models API
+as fallback; aidor does not ship a hard-coded model list:
+
+```
+aidor run --interactive
 ```
 
 Optionally steer the run with extra instructions injected into every
@@ -109,6 +121,29 @@ See [plan.md](plan.md) for design details.
 | `aidor clean`    | Remove `.aidor/` run artefacts                 |
 | `aidor abort`    | Write `.aidor/ABORT`; the phase watchdog terminates the running Copilot subprocess promptly |
 
+## Safety highlights
+
+- The coder is blocked from changing aidor policy/orchestration files such as
+  `.aidor/allowed_exceptions.yml`, `.aidor/tool_allowlist.yml`,
+  `.aidor/shell_allowlist.yml`, `.github/hooks/aidor.json`, and generated
+  `.github/agents/aidor-*.md`. The reviewer may touch those only after careful
+  consideration and should escalate to the human when in doubt.
+- Git submodules are treated as external pinned dependencies: agents ignore code
+  issues inside submodule paths and only review parent-repo integration.
+- Agents are instructed to scan for configured MCP tools and use them when they
+  are the right source. MCP policy is YAML-driven; denied MCP tool calls are
+  recorded in `.aidor/logs/failed_mcp_tools.jsonl` and summarized with allowlist
+  guidance.
+- `state.json` writes are atomic and retried for transient Windows
+  `PermissionError`s. If persistence still fails, aidor exits before launching
+  another phase instead of continuing on stale state.
+- `.aidor/ABORT` is a one-shot marker. A new run clears a stale marker after
+  bootstrap and before the first phase starts.
+- `AGENTS.md` is runtime-only: aidor copies
+  `src/aidor/resources/aidor_runtime_agents.md` to the target repo during a
+  run, backs up any project `AGENTS.md` under `.github/aidor-backups/`, and
+  restores or removes it during teardown / `aidor clean`.
+
 ## Layout
 
 ```
@@ -116,7 +151,7 @@ See [plan.md](plan.md) for design details.
   reviews/           review-NNNN-*.md (from reviewer)
   fixes/             fixes-NNNN-*.md (from coder)
   transcripts/       copilot --share outputs
-  logs/              otel + qa + orchestrator logs
+  logs/              otel + qa + orchestrator logs + denied MCP tools
   pending/           human-question IPC (hook ↔ orchestrator)
   state.json         source of truth for resume / summary
   summary.md         final human-readable report

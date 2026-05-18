@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
-from aidor.orchestrator import Orchestrator, write_abort_marker
+from aidor.orchestrator import STATE_PERSISTENCE_EXIT_CODE, Orchestrator, write_abort_marker
+from aidor.state import State
 
 CLEAN_REVIEW = """\
 # Review
@@ -77,6 +80,72 @@ def test_write_abort_marker_is_idempotent(tmp_path: Path):
     assert write_abort_marker(aidor_dir, "second") is False
     # First write wins — the marker is single-shot.
     assert "aborted_via=first" in (aidor_dir / "ABORT").read_text(encoding="utf-8")
+
+
+def test_run_clears_stale_abort_marker_before_phase(run_config, monkeypatch: pytest.MonkeyPatch):
+    from aidor import phase as phase_mod
+    from aidor.phase import PhaseResult
+    from aidor.telemetry import PhaseMetrics
+
+    run_config.aidor_dir.mkdir(parents=True, exist_ok=True)
+    write_abort_marker(run_config.aidor_dir, "previous_run")
+    seen_marker: list[bool] = []
+
+    async def fake_phase_run(self):
+        seen_marker.append((run_config.aidor_dir / "ABORT").exists())
+        return PhaseResult(
+            exit_code=130,
+            stop_reason="aborted",
+            duration_s=0.01,
+            transcript_path=self.transcript_path,
+            otel_path=self.otel_path,
+            metrics=PhaseMetrics(),
+            restarts=[],
+        )
+
+    monkeypatch.setattr(phase_mod.PhaseRunner, "run", fake_phase_run)
+
+    orch = Orchestrator(run_config)
+    code = asyncio.run(orch.run())
+
+    assert code == 130
+    assert seen_marker == [False]
+
+
+def test_state_save_failure_aborts_before_launching_next_phase(
+    run_config, monkeypatch: pytest.MonkeyPatch
+):
+    from aidor import phase as phase_mod
+
+    original_save = State.save
+    save_calls = {"count": 0}
+    launched: list[str] = []
+
+    def failing_save(self: State, path: Path) -> None:
+        save_calls["count"] += 1
+        if save_calls["count"] >= 2:
+            raise PermissionError("state.json locked")
+        original_save(self, path)
+
+    async def fake_phase_run(self):
+        launched.append(self.role)
+        raise AssertionError("phase should not launch after state persistence failure")
+
+    monkeypatch.setattr(State, "save", failing_save)
+    monkeypatch.setattr(phase_mod.PhaseRunner, "run", fake_phase_run)
+
+    buf = StringIO()
+    console = Console(file=buf, width=200, color_system=None)
+    orch = Orchestrator(run_config, console=console)
+
+    code = asyncio.run(orch.run())
+
+    assert code == STATE_PERSISTENCE_EXIT_CODE
+    assert orch.state.status == "failed"
+    assert launched == []
+    out = buf.getvalue()
+    assert "fatal:" in out
+    assert "state.json" in out
 
 
 def test_cli_run_writes_abort_marker_on_keyboard_interrupt(

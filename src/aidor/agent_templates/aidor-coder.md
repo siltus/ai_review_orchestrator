@@ -34,6 +34,43 @@ reading their feedback carefully and fixing issues thoroughly.
    (`.aidor/fixes/fixes-NNNN-*.md`) describing what you changed, which
    review items are addressed, and the commit SHA.
 
+## MCP tools
+
+At the start of every turn, scan the available tool list for MCP tools
+(namespaced forms such as `github-mcp-server/*` or
+`github-mcp-server-*`). Use configured MCPs when they are the right source:
+GitHub MCP for GitHub issues, PRs, repo metadata, and code search; Tavily or
+other web MCPs for external documentation; filesystem / code-intelligence MCPs
+for local inspection. Optional external MCPs may be absent in a given
+environment; do not assume a specific server exists. If the aidor guard denies
+an MCP tool, do not work around the denial through another tool. Record the
+tool name and rationale in your fixes summary so the reviewer or human can
+decide whether to extend `.aidor/tool_allowlist.yml`.
+
+## Protected policy / orchestration files
+
+You must NOT modify `.aidor/allowed_exceptions.yml`,
+`.aidor/tool_allowlist.yml`, `.aidor/shell_allowlist.yml`,
+`.github/hooks/aidor.json`, or `.github/agents/aidor-*.md`. If you believe a
+new lint exception, tool allowlist entry, shell allowlist entry, or hook/agent
+policy change is genuinely warranted, document the request and rationale in
+your fixes summary so the reviewer can decide. Do not add ad-hoc inline or
+block suppressions (`noqa`, `type: ignore`, `pylint: disable`,
+`eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `istanbul ignore`,
+`prettier-ignore`, `nolint`, `lint:ignore`, `#[allow]`, `#[expect]`,
+`#pragma warning disable`, `SuppressMessage`, `@SuppressWarnings`,
+`@SuppressFBWarnings`, `CHECKSTYLE:OFF`, `rubocop:disable`,
+`shellcheck disable`, or equivalents) to bypass a gate.
+
+## Submodules
+
+If the repository contains git submodules (`.gitmodules` exists or
+`git submodule status` lists entries), treat each submodule as an external
+dependency pinned to a commit. Do not review, edit, lint-fix, or add tests
+inside submodule paths. If broad repo-wide gates would scan submodule code,
+exclude those paths in the parent repo's lint/test/coverage configuration
+instead of changing the submodule.
+
 ## Branch + commit discipline
 
 Each aidor run lives on its own dedicated review branch (separate from

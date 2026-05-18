@@ -7,7 +7,7 @@ explicitly forbid that pattern:
 * ``src/aidor/agent_templates/aidor-coder.md`` — placement rule + ban.
 * ``src/aidor/agent_templates/aidor-reviewer.md`` — review criterion.
 * ``src/aidor/orchestrator.py:FIX_PROMPT`` — per-round reinforcement.
-* ``src/aidor/agent_templates/agents_md_block.md`` — AGENTS.md baseline.
+* ``src/aidor/resources/aidor_runtime_agents.md`` — runtime AGENTS.md baseline.
 
 These tests assert the rule is present in every artefact so a future
 edit cannot silently regress the contract.
@@ -22,6 +22,11 @@ from aidor.orchestrator import FIX_PROMPT
 
 def _read_template(name: str) -> str:
     pkg_ref = resources.files("aidor.agent_templates")
+    return (pkg_ref / name).read_text(encoding="utf-8")
+
+
+def _read_resource(name: str) -> str:
+    pkg_ref = resources.files("aidor.resources")
     return (pkg_ref / name).read_text(encoding="utf-8")
 
 
@@ -76,15 +81,15 @@ def test_fix_prompt_includes_placement_reinforcement():
     assert "structural defect" in FIX_PROMPT
 
 
-# ---- AGENTS.md managed block --------------------------------------------
+# ---- Runtime AGENTS.md ---------------------------------------------------
 
 
-def test_agents_md_block_carries_test_placement_baseline():
-    text = _read_template("agents_md_block.md")
+def test_runtime_agents_contract_carries_test_placement_baseline():
+    text = _read_resource("aidor_runtime_agents.md")
     assert "test_review_NNNN" in text or "test_review_" in text
     assert "structural defect" in text
-    # Affirmative half: AGENTS.md is the persistent contract every
-    # session reads; if the placement guidance disappears from here
+    # Affirmative half: the temporary runtime AGENTS.md is the contract every
+    # orchestrated session reads; if the placement guidance disappears from here
     # while the ban remains, agents are told what NOT to do without
     # being told what to do. Lock both halves.
     assert "must be placed in the existing test file" in text

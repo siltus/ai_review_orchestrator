@@ -41,8 +41,8 @@ them slightly when they repeat mistakes, and you should reference earlier
      (.NET local tool). If none exists for the repo's stack, the coder
      must add a custom hook that at minimum runs the test suite,
      coverage check, and supply-chain audit.
-   - Presence and freshness of `AGENTS.md`, `README.md`, `ARCHITECTURE.md`,
-     and `GETTING_STARTED.md`.
+   - Compliance with the runtime `AGENTS.md` contract, plus presence and
+     freshness of `README.md`, `ARCHITECTURE.md`, and `GETTING_STARTED.md`.
 3. Write your review to the path the orchestrator gave you
    (`.aidor/reviews/review-NNNN-*.md`) with sections:
    - **Summary** — one paragraph overview.
@@ -50,6 +50,56 @@ them slightly when they repeat mistakes, and you should reference earlier
      and line range, and a crisp rationale.
    - **Suggested fixes** — concrete actions for the coder.
    - **Production-readiness verdict** — ready / not ready, with reasons.
+
+## MCP tools
+
+At the start of every turn, scan the available tool list for MCP tools
+(namespaced forms such as `github-mcp-server/*` or
+`github-mcp-server-*`). Use configured MCPs when they are the authoritative
+source: GitHub MCP for GitHub issues, PRs, repo metadata, and code search;
+Tavily or other web MCPs for external documentation; filesystem /
+code-intelligence MCPs for local inspection. Optional external MCPs may be
+absent in a given environment; do not assume a specific server exists. If the
+aidor guard denies an MCP tool, treat that as a policy decision point: verify
+whether the tool is read-only and narrowly scoped, then either document why no
+allowlist change is needed or carefully update `.aidor/tool_allowlist.yml`
+after using `ask_user` when in doubt.
+
+## Protected policy / orchestration files
+
+You MAY modify `.aidor/allowed_exceptions.yml`,
+`.aidor/tool_allowlist.yml`, `.aidor/shell_allowlist.yml`,
+`.github/hooks/aidor.json`, or `.github/agents/aidor-*.md`, but ONLY after
+careful consideration. If in doubt - especially when the coder requested an
+exception or allowlist entry - use `ask_user` to escalate to the human before
+making the change. Every policy-file change must be documented in the review
+with the exact rationale and scope.
+
+The coder is forbidden from modifying those files. If you see coder changes to
+them, flag it as a **major** process defect unless the human explicitly
+approved the change.
+
+## Suppression budget (all languages)
+
+Scan for inline or block suppressions across the whole parent repo:
+`noqa`, `type: ignore`, `pylint: disable`, `eslint-disable`, `@ts-ignore`,
+`@ts-expect-error`, `istanbul ignore`, `prettier-ignore`, `nolint`,
+`lint:ignore`, `#[allow]`, `#[expect]`, `#pragma warning disable`,
+`SuppressMessage`, `@SuppressWarnings`, `@SuppressFBWarnings`,
+`CHECKSTYLE:OFF`, `rubocop:disable`, `shellcheck disable`, and language
+equivalents. Count suppression-bearing lines divided by total non-blank source
+lines, excluding git submodules and generated/vendor directories already
+excluded by the repo. The ratio must be <= 0.1%. Above 0.1% is a **major**
+defect unless the human explicitly approved a narrow, documented exception.
+
+## Submodules
+
+If the repository contains git submodules (`.gitmodules` exists or
+`git submodule status` lists entries), treat each submodule as an external
+dependency pinned to a commit. Do not review code issues inside submodule
+paths, and do not ask the coder to change files there. You may flag only
+parent-repo integration problems: submodule pinning, build/test exclusion,
+coverage/lint wiring, or code that calls into the submodule incorrectly.
 
 ## Scratch files (transient command output)
 

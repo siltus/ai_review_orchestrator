@@ -5,12 +5,22 @@ Consumes the aggregated State written by the orchestrator.
 
 from __future__ import annotations
 
+import json
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 
 from aidor.state import State
+
+
+@dataclass(frozen=True)
+class FailedMcpTool:
+    tool: str
+    count: int
+    reason: str
 
 
 def render_table(state: State) -> Table:
@@ -74,11 +84,99 @@ def write_summary_md(state: State, path: Path) -> None:
                 p=_fmt_prod(prod),
             )
         )
+    failed_mcp = collect_failed_mcp_tools(path.parent)
+    if failed_mcp:
+        lines.extend(_failed_mcp_markdown(failed_mcp))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def print_summary(state: State, console: Console | None = None) -> None:
-    (console or Console()).print(render_table(state))
+def print_summary(
+    state: State,
+    console: Console | None = None,
+    *,
+    aidor_dir: Path | None = None,
+) -> None:
+    c = console or Console()
+    c.print(render_table(state))
+    if aidor_dir is None:
+        return
+    failed_mcp = collect_failed_mcp_tools(aidor_dir)
+    if not failed_mcp:
+        return
+    tools = ", ".join(f"{item.tool} ({item.count})" for item in failed_mcp)
+    c.print(f"[yellow]Denied MCP tools:[/yellow] {tools}")
+    c.print("[dim]Add reviewed tools to .aidor/tool_allowlist.yml for the next run.[/dim]")
+
+
+def collect_failed_mcp_tools(aidor_dir: Path) -> list[FailedMcpTool]:
+    log_path = aidor_dir / "logs" / "failed_mcp_tools.jsonl"
+    if not log_path.is_file():
+        return []
+    counts: Counter[str] = Counter()
+    reasons: dict[str, str] = {}
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        tool = data.get("tool")
+        if not isinstance(tool, str) or not tool.strip():
+            continue
+        cleaned = tool.strip()
+        counts[cleaned] += 1
+        reason = data.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            reasons[cleaned] = reason.strip()
+    return [
+        FailedMcpTool(tool=tool, count=count, reason=reasons.get(tool, ""))
+        for tool, count in sorted(counts.items())
+    ]
+
+
+def _failed_mcp_markdown(items: list[FailedMcpTool]) -> list[str]:
+    lines = [
+        "",
+        "## Denied MCP tools",
+        "",
+        "The aidor guard denied these MCP tool calls during the run:",
+        "",
+        "| tool | count | last reason |",
+        "|---|---:|---|",
+    ]
+    for item in items:
+        lines.append(
+            f"| `{_md_escape(item.tool)}` | {item.count} | {_md_escape(item.reason) or '—'} |"
+        )
+    lines.extend(
+        [
+            "",
+            "To allow reviewed MCP tools next time, add them to `.aidor/tool_allowlist.yml`:",
+            "",
+            "```yaml",
+            "tools:",
+            *[f"  - {item.tool}" for item in items],
+            "mcp_tools:",
+            *[f"  - {item.tool}" for item in items],
+            "```",
+            "",
+            "Only whitelist side-effecting MCP tools after reviewing their behavior. "
+            "If a tool reads or writes repo files, also classify it with "
+            "`path_scoped_tools`, `write_tools`, and the appropriate `path_arg_keys`.",
+        ]
+    )
+    return lines
+
+
+def _md_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
 
 
 # ---- Helpers --------------------------------------------------------------

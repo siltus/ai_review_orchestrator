@@ -27,7 +27,9 @@ import sys
 import time
 import uuid
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, cast
 
@@ -111,21 +113,70 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
         args = {}
 
     _log_breadcrumb(payload, f"preToolUse tool={tool!r}")
+    policy = _load_tool_policy(_repo_root(payload))
+    write_tools = _WRITE_TOOLS | policy.write_tools
 
     if tool == "ask_user":
         return _handle_ask_user(payload, args)
+
+    def deny(decision: dict[str, Any]) -> dict[str, Any]:
+        _record_failed_mcp_tool(event, payload, tool, decision, policy)
+        return decision
 
     # Tool allowlist: deny-by-default for every Copilot tool that is not
     # in the curated list. The flag matrix in `guard_profile.py` is no
     # longer in play (we spawn with `--allow-all-tools`), so without
     # this check arbitrary MCP / network / agent-spawning tools would
     # be unconstrained. See `policies/tool_allowlist.yml`.
-    decision = _check_tool_allowlist(payload, tool)
+    decision = _check_tool_allowlist(payload, tool, policy=policy)
     if decision is not None:
-        return decision
+        return deny(decision)
+
+    if tool in policy.memory_scoped_tools:
+        decision = _check_memory_scope(tool, args, policy)
+        if decision is not None:
+            return deny(decision)
+
+    if tool in policy.path_scoped_tools and tool not in write_tools:
+        decision = _check_path_containment(payload, args, policy=policy)
+        if decision is not None:
+            return deny(decision)
 
     # Path containment for file writes / edits / creates.
-    if tool in {
+    if tool in write_tools:
+        # Role-scoped protected paths run BEFORE generic containment so
+        # the operator sees a role-specific message (e.g. "coder may
+        # not modify .aidor/allowed_exceptions.yml") rather than the
+        # less helpful "path outside the repo" message. Protected paths
+        # are inside the repo, so generic containment would not catch
+        # them anyway.
+        decision = _check_role_protected_paths(payload, tool, args)
+        if decision is not None:
+            return deny(decision)
+        decision = _check_path_containment(payload, args, policy=policy)
+        if decision is not None:
+            return deny(decision)
+
+    # Shell-policy enforcement. The flag matrix in earlier revisions did
+    # this, but the CLI's flag grammar can't express most of what we
+    # need (see `guard_profile.py` module docstring); the hook is now
+    # the sole enforcer of shell policy.
+    if tool in _SHELL_TOOLS:
+        decision = _check_role_protected_paths(payload, tool, args)
+        if decision is not None:
+            return deny(decision)
+        decision = _check_shell_allowlist(payload, args)
+        if decision is not None:
+            return deny(decision)
+        decision = _check_shell_escape(payload, args)
+        if decision is not None:
+            return deny(decision)
+
+    return None  # fall through to default behaviour
+
+
+_WRITE_TOOLS: frozenset[str] = frozenset(
+    {
         "write",
         "edit",
         "create",
@@ -136,24 +187,31 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
         "str_replace_editor",
         "NotebookEdit",
         "apply_patch",
-    }:
-        decision = _check_path_containment(payload, args)
-        if decision is not None:
-            return decision
+    }
+)
 
-    # Shell-policy enforcement. The flag matrix in earlier revisions did
-    # this, but the CLI's flag grammar can't express most of what we
-    # need (see `guard_profile.py` module docstring); the hook is now
-    # the sole enforcer of shell policy.
-    if tool in {"bash", "Bash", "powershell", "PowerShell", "shell", "run_in_terminal"}:
-        decision = _check_shell_allowlist(payload, args)
-        if decision is not None:
-            return decision
-        decision = _check_shell_escape(payload, args)
-        if decision is not None:
-            return decision
+_SHELL_TOOLS: frozenset[str] = frozenset(
+    {"bash", "Bash", "powershell", "PowerShell", "shell", "run_in_terminal"}
+)
 
-    return None  # fall through to default behaviour
+_PATH_ARG_KEYS: tuple[str, ...] = ("path", "file", "filePath", "target", "relative_path")
+
+
+@dataclass(frozen=True)
+class ToolPolicy:
+    tools: frozenset[str]
+    write_tools: frozenset[str]
+    path_scoped_tools: frozenset[str]
+    path_arg_keys: tuple[str, ...]
+    deny_path_prefixes: tuple[str, ...]
+    memory_scoped_tools: frozenset[str]
+    memory_arg_keys: tuple[str, ...]
+    memory_forbidden_values: frozenset[str]
+    memory_forbidden_prefixes: tuple[str, ...]
+    memory_deny_absolute: bool
+    memory_deny_parent_segments: bool
+    mcp_tools: frozenset[str]
+    mcp_tool_patterns: tuple[str, ...]
 
 
 def _on_permission_request(event: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -166,8 +224,10 @@ def _on_permission_request(event: str, payload: dict[str, Any]) -> dict[str, Any
     not just in `preToolUse`.
     """
     tool = _get_field(payload, "toolName", "tool_name", default="")
-    decision = _check_tool_allowlist(payload, tool)
+    policy = _load_tool_policy(_repo_root(payload))
+    decision = _check_tool_allowlist(payload, tool, policy=policy)
     if decision is not None:
+        _record_failed_mcp_tool(event, payload, tool, decision, policy)
         _log_breadcrumb(payload, f"permissionRequest deny tool={tool!r} (not in allowlist)")
         return decision
     _log_breadcrumb(
@@ -446,23 +506,70 @@ def _ask_human(repo: Path, question: str, class_name: str) -> str:
 
 
 def _load_tool_allowlist(repo: Path) -> set[str]:
-    """Return the union of bundled and user-supplied allowed tool names.
+    """Return the union of bundled and user-supplied allowed tool names."""
+    return set(_load_tool_policy(repo).tools)
 
-    Bundled defaults live in ``aidor.policies.tool_allowlist.yml`` and
-    cover the safe subset of Copilot tools we expect both agent roles
-    to use. Users may extend (never replace) by adding entries to
-    ``<repo>/.aidor/tool_allowlist.yml``::
 
-        tools:
-          - my_custom_mcp_tool
+def _load_tool_policy(repo: Path) -> ToolPolicy:
+    """Return the merged tool policy loaded from defaults plus repo overrides.
 
-    Tool names are matched case-sensitively against ``toolName``.
-    Malformed YAML or unreadable files are silently ignored — failing
-    open here would defeat the deny-by-default contract, but failing
-    closed on a parser hiccup would brick every Copilot run, so we
-    prefer the bundled defaults alone if the user file is broken.
+    ``tools`` remains the deny-by-default allowlist. Optional policy lists
+    classify tools for generic checks (write/path scoped, memory-name scoped,
+    MCP-denial reporting) without hard-coding any external MCP server names in
+    Python.
     """
-    names: set[str] = set()
+    tools: set[str] = set()
+    write_tools: set[str] = set()
+    path_scoped_tools: set[str] = set()
+    path_arg_keys: list[str] = list(_PATH_ARG_KEYS)
+    deny_path_prefixes: list[str] = []
+    memory_scoped_tools: set[str] = set()
+    memory_arg_keys: list[str] = []
+    memory_forbidden_values: set[str] = set()
+    memory_forbidden_prefixes: list[str] = []
+    memory_deny_absolute = False
+    memory_deny_parent_segments = False
+    mcp_tools: set[str] = set()
+    mcp_tool_patterns: list[str] = []
+
+    for data in _iter_tool_policy_documents(repo):
+        tools.update(_clean_str_items(data.get("tools")))
+        write_tools.update(_clean_str_items(data.get("write_tools")))
+        path_scoped_tools.update(_clean_str_items(data.get("path_scoped_tools")))
+        _extend_unique(path_arg_keys, _clean_str_items(data.get("path_arg_keys")))
+        _extend_unique(deny_path_prefixes, _clean_str_items(data.get("deny_path_prefixes")))
+        memory_scoped_tools.update(_clean_str_items(data.get("memory_scoped_tools")))
+        _extend_unique(memory_arg_keys, _clean_str_items(data.get("memory_arg_keys")))
+        memory_forbidden_values.update(_clean_str_items(data.get("memory_forbidden_values")))
+        _extend_unique(
+            memory_forbidden_prefixes,
+            _clean_str_items(data.get("memory_forbidden_prefixes")),
+        )
+        memory_deny_absolute = memory_deny_absolute or bool(data.get("memory_deny_absolute"))
+        memory_deny_parent_segments = memory_deny_parent_segments or bool(
+            data.get("memory_deny_parent_segments")
+        )
+        mcp_tools.update(_clean_str_items(data.get("mcp_tools")))
+        _extend_unique(mcp_tool_patterns, _clean_str_items(data.get("mcp_tool_patterns")))
+
+    return ToolPolicy(
+        tools=frozenset(tools),
+        write_tools=frozenset(write_tools),
+        path_scoped_tools=frozenset(path_scoped_tools),
+        path_arg_keys=tuple(path_arg_keys),
+        deny_path_prefixes=tuple(deny_path_prefixes),
+        memory_scoped_tools=frozenset(memory_scoped_tools),
+        memory_arg_keys=tuple(memory_arg_keys),
+        memory_forbidden_values=frozenset(memory_forbidden_values),
+        memory_forbidden_prefixes=tuple(memory_forbidden_prefixes),
+        memory_deny_absolute=memory_deny_absolute,
+        memory_deny_parent_segments=memory_deny_parent_segments,
+        mcp_tools=frozenset(mcp_tools),
+        mcp_tool_patterns=tuple(mcp_tool_patterns),
+    )
+
+
+def _iter_tool_policy_documents(repo: Path) -> Iterator[dict[str, Any]]:
     try:
         from importlib import resources
 
@@ -471,27 +578,36 @@ def _load_tool_allowlist(repo: Path) -> set[str]:
         )
         import yaml
 
-        data = _as_str_dict(yaml.safe_load(text))
-        for n in _as_list(data.get("tools")):
-            if isinstance(n, str) and n.strip():
-                names.add(n.strip())
+        yield _as_str_dict(yaml.safe_load(text))
     except Exception:  # pragma: no cover - defensive
         pass
+
     user = repo / ".aidor" / "tool_allowlist.yml"
     if user.is_file():
         try:
             import yaml
 
-            data = _as_str_dict(yaml.safe_load(user.read_text(encoding="utf-8")))
-            for n in _as_list(data.get("tools")):
-                if isinstance(n, str) and n.strip():
-                    names.add(n.strip())
+            yield _as_str_dict(yaml.safe_load(user.read_text(encoding="utf-8")))
         except Exception:  # pragma: no cover - defensive
             pass
-    return names
 
 
-def _check_tool_allowlist(payload: dict[str, Any], tool: str) -> dict[str, Any] | None:
+def _clean_str_items(value: Any) -> list[str]:
+    return [item.strip() for item in _as_list(value) if isinstance(item, str) and item.strip()]
+
+
+def _extend_unique(target: list[str], items: list[str]) -> None:
+    for item in items:
+        if item not in target:
+            target.append(item)
+
+
+def _check_tool_allowlist(
+    payload: dict[str, Any],
+    tool: str,
+    *,
+    policy: ToolPolicy | None = None,
+) -> dict[str, Any] | None:
     """Deny the call if ``tool`` is not in the curated allowlist.
 
     A missing/empty tool name is *not* denied here — that would block
@@ -502,9 +618,9 @@ def _check_tool_allowlist(payload: dict[str, Any], tool: str) -> dict[str, Any] 
     """
     if not tool:
         return None
-    repo = _repo_root(payload)
-    allow = _load_tool_allowlist(repo)
-    if tool in allow:
+    if policy is None:
+        policy = _load_tool_policy(_repo_root(payload))
+    if tool in policy.tools:
         return None
     return {
         "permissionDecision": "deny",
@@ -515,12 +631,264 @@ def _check_tool_allowlist(payload: dict[str, Any], tool: str) -> dict[str, Any] 
     }
 
 
-def _check_path_containment(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any] | None:
+def _is_mcp_tool(tool: str, policy: ToolPolicy) -> bool:
+    return tool in policy.mcp_tools or any(
+        fnmatchcase(tool, pattern) for pattern in policy.mcp_tool_patterns
+    )
+
+
+def _record_failed_mcp_tool(
+    event: str,
+    payload: dict[str, Any],
+    tool: str,
+    decision: dict[str, Any],
+    policy: ToolPolicy,
+) -> None:
+    if decision.get("permissionDecision") != "deny" or not _is_mcp_tool(tool, policy):
+        return
     repo = _repo_root(payload)
-    for key in ("path", "file", "filePath", "target"):
+    logs = repo / ".aidor" / "logs"
+    try:
+        logs.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": _utcnow(),
+            "event": event,
+            "tool": tool,
+            "reason": str(decision.get("permissionDecisionReason") or ""),
+        }
+        with (logs / "failed_mcp_tools.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        return
+
+
+def _check_memory_scope(
+    tool: str,
+    args: dict[str, Any],
+    policy: ToolPolicy,
+) -> dict[str, Any] | None:
+    """Apply generic memory-name restrictions from the tool policy."""
+    for key in policy.memory_arg_keys:
+        value = args.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        name = value.strip().replace("\\", "/")
+        drive_like = len(name) >= 2 and name[1] == ":" and name[0].isalpha()
+        invalid = (
+            name in policy.memory_forbidden_values
+            or any(name.startswith(prefix) for prefix in policy.memory_forbidden_prefixes)
+            or (policy.memory_deny_absolute and (name.startswith("/") or drive_like))
+            or (
+                policy.memory_deny_parent_segments and any(part == ".." for part in name.split("/"))
+            )
+        )
+        if invalid:
+            return {
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    f"[aidor guard] refusing {tool!r} outside permitted memory "
+                    f"namespace via {key}={value!r}"
+                ),
+            }
+    return None
+
+
+# ---- Role-scoped protected paths ------------------------------------------
+#
+# Some files inside the repo are owned by a specific aidor role and must
+# not be modified by the other one. Without this guard the coder can
+# "cheat" the quality gate by editing `.aidor/allowed_exceptions.yml`,
+# rewriting its own review file in `.aidor/reviews/`, flipping
+# `.aidor/state.json` to "converged", overwriting the bootstrapped agent
+# templates, or deleting the active hook config.
+#
+# Per-role lists are RELATIVE TO REPO ROOT (POSIX separators). Each
+# entry is matched against the normalised relative path of the write
+# target — either as an exact path or, when it ends with ``/``, as a
+# directory-prefix glob ("anything inside this subtree").
+#
+# Reviewer ownership rationale (user spec — 2026-05-16):
+#   "Only the reviewer should be allowed to touch these files and
+#    ONLY AFTER CAREFFUL consideration. Ask human if in doubt."
+# The reviewer is therefore NOT denied write access to the policy /
+# hook / agent-template files at the hook layer — that gate is in the
+# reviewer's instructions (escalate via ask_user first). The hook DOES
+# still protect orchestrator-owned files (state.json, ABORT, logs,
+# pending, transcripts, config snapshot) from both roles since neither
+# agent ever needs to edit those.
+_PROTECTED_RELPATHS_BY_ROLE: dict[str, tuple[str, ...]] = {
+    "coder": (
+        # Policy and gate-config files. The coder must request
+        # exceptions through the reviewer (via the fixes summary)
+        # rather than edit them directly.
+        ".aidor/allowed_exceptions.yml",
+        ".aidor/tool_allowlist.yml",
+        ".aidor/shell_allowlist.yml",
+        ".github/hooks/aidor.json",
+        ".github/agents/aidor-coder.md",
+        ".github/agents/aidor-reviewer.md",
+        # Reviewer's output — coder rewriting a review to make it
+        # "look clean" is a textbook cheat.
+        ".aidor/reviews/",
+        # Orchestrator-owned bookkeeping (also protected from the
+        # reviewer — see below).
+        ".aidor/state.json",
+        ".aidor/config.snapshot.toml",
+        ".aidor/logs/",
+        ".aidor/pending/",
+        ".aidor/transcripts/",
+        ".aidor/ABORT",
+    ),
+    "reviewer": (
+        # Coder's output — reviewer editing the coder's fixes
+        # summary would mask which fixes were actually applied.
+        ".aidor/fixes/",
+        # Orchestrator-owned bookkeeping.
+        ".aidor/state.json",
+        ".aidor/config.snapshot.toml",
+        ".aidor/logs/",
+        ".aidor/pending/",
+        ".aidor/transcripts/",
+        ".aidor/ABORT",
+    ),
+}
+
+
+def _normalise_relpath(repo: Path, raw: str) -> str | None:
+    """Return ``raw`` normalised as a POSIX relative path under ``repo``,
+    or ``None`` when the target does not resolve inside the repo. Used
+    to compare write targets against ``_PROTECTED_RELPATHS_BY_ROLE``.
+
+    ``os.path.normcase`` is applied so case-insensitive filesystems
+    (Windows, macOS HFS+) cannot bypass the check via casing tricks
+    (``./.AIDOR/Allowed_Exceptions.YML``)."""
+    try:
+        candidate = Path(raw)
+        target = (
+            (repo / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+        )
+        rel = target.relative_to(repo.resolve())
+    except (OSError, ValueError):
+        return None
+    return os.path.normcase(rel.as_posix())
+
+
+def _matches_protected(rel_normcase: str, protected: tuple[str, ...]) -> str | None:
+    """Return the protected entry that ``rel_normcase`` matches, or None."""
+    for entry in protected:
+        entry_nc = os.path.normcase(entry)
+        if entry.endswith("/"):
+            if rel_normcase == entry_nc.rstrip("/") or rel_normcase.startswith(entry_nc):
+                return entry
+        elif rel_normcase == entry_nc:
+            return entry
+    return None
+
+
+def _role_deny(role: str, entry: str, *, tool: str) -> dict[str, Any]:
+    """Build the deny payload for a role-scoped protected-path violation."""
+    if role == "coder":
+        guidance = (
+            "Coder must NOT modify this file. If you believe a new lint "
+            "exception or policy change is genuinely warranted, document the "
+            "request in your fixes summary and let the reviewer act on it. "
+            "Do not add inline `# noqa` / `eslint-disable` / `#[allow]` / "
+            "`@SuppressWarnings` either — the reviewer will flag those as "
+            "cheating and the run will not converge."
+        )
+    else:
+        guidance = (
+            "Orchestrator-owned file. Neither role may edit this; aidor manages it across rounds."
+        )
+    return {
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            f"[aidor guard] {role} role refused {tool!r} write to "
+            f"protected path {entry!r}: {guidance}"
+        ),
+    }
+
+
+def _check_role_protected_paths(
+    payload: dict[str, Any], tool: str, args: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Deny writes targeting files protected from the active aidor role.
+
+    The active role is read from ``$AIDOR_ROLE`` (set by ``PhaseRunner``
+    when launching the Copilot subprocess). When unset, this check is a
+    no-op — operator-driven manual ``copilot`` sessions in a repo that
+    still has a leftover hook installed must keep their write freedom.
+
+    Applies to both file-write tools (``write``/``edit``/``apply_patch``
+    /...) and shell tools (``bash``/``powershell``/...). Shell commands
+    are scanned with a normcased substring check against each protected
+    entry — false positives like ``git log .aidor/reviews/`` are
+    acceptable for protected files, and the coder does not need to
+    inspect those through shell anyway (they can use ``view``/``read``).
+    """
+    role = os.environ.get("AIDOR_ROLE", "").strip().lower()
+    if role not in _PROTECTED_RELPATHS_BY_ROLE:
+        return None
+    protected = _PROTECTED_RELPATHS_BY_ROLE[role]
+    repo = _repo_root(payload)
+
+    if tool in _SHELL_TOOLS:
+        cmd = args.get("command") or args.get("cmd") or ""
+        if isinstance(cmd, str) and cmd:
+            cmd_nc = os.path.normcase(cmd.replace("\\", "/"))
+            for entry in protected:
+                entry_nc = os.path.normcase(entry.rstrip("/"))
+                if entry_nc and entry_nc in cmd_nc:
+                    return _role_deny(role, entry, tool=tool)
+        return None
+
+    # File-write tools: check every path arg the schema may carry.
+    for key in _PATH_ARG_KEYS:
+        value = args.get(key)
+        if not value or not isinstance(value, str):
+            continue
+        rel_nc = _normalise_relpath(repo, value)
+        if rel_nc is None:
+            continue
+        match = _matches_protected(rel_nc, protected)
+        if match is not None:
+            return _role_deny(role, match, tool=tool)
+
+    # ``apply_patch`` carries targets inside the patch body.
+    patch_body = args.get("input") or args.get("patch") or ""
+    if isinstance(patch_body, str) and patch_body:
+        for raw_path in _iter_apply_patch_paths(patch_body):
+            rel_nc = _normalise_relpath(repo, raw_path)
+            if rel_nc is None:
+                continue
+            match = _matches_protected(rel_nc, protected)
+            if match is not None:
+                return _role_deny(role, match, tool=tool)
+    return None
+
+
+def _check_path_containment(
+    payload: dict[str, Any],
+    args: dict[str, Any],
+    *,
+    policy: ToolPolicy | None = None,
+) -> dict[str, Any] | None:
+    repo = _repo_root(payload)
+    if policy is None:
+        policy = _load_tool_policy(repo)
+    for key in policy.path_arg_keys:
         value = args.get(key)
         if value:
-            target = Path(value)
+            raw_value = str(value)
+            if any(raw_value.lstrip().startswith(prefix) for prefix in policy.deny_path_prefixes):
+                return {
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        "[aidor guard] refusing external path-like tool argument; "
+                        "only paths inside the repo are allowed"
+                    ),
+                }
+            target = Path(raw_value)
             target = (repo / target).resolve() if not target.is_absolute() else target.resolve()
             try:
                 target.relative_to(repo.resolve())

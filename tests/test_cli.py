@@ -16,9 +16,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from click.exceptions import Exit
 from typer.testing import CliRunner
 
+import aidor.cli as cli
+from aidor.bootstrap import AGENTS_BACKUP_DIR, AGENTS_BACKUP_META, AGENTS_BACKUP_ORIGINAL
 from aidor.cli import app
+from aidor.model_history import ModelInfo
 from aidor.state import State
 
 runner = CliRunner()
@@ -168,6 +172,24 @@ def test_clean_removes_only_agent_files_if_other_artefacts_absent(tmp_path: Path
     assert not coder.exists()
 
 
+def test_clean_restores_agents_md_before_removing_aidor_dir(tmp_path: Path):
+    aidor_dir = tmp_path / ".aidor"
+    aidor_dir.mkdir()
+    (aidor_dir / "state.json").write_text("{}", encoding="utf-8")
+    backup_dir = tmp_path / AGENTS_BACKUP_DIR
+    backup_dir.mkdir(parents=True)
+    (backup_dir / AGENTS_BACKUP_ORIGINAL).write_text("# project agents\n", encoding="utf-8")
+    (backup_dir / AGENTS_BACKUP_META).write_text('{"existed": true}\n', encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("# aidor runtime\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["clean", "--repo", str(tmp_path), "-y"])
+
+    assert result.exit_code == 0, result.stdout
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8") == "# project agents\n"
+    assert not backup_dir.exists()
+    assert not aidor_dir.exists()
+
+
 # ---- corrupted state.json ------------------------------------------------
 
 
@@ -216,6 +238,290 @@ def test_version_flag():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert "aidor" in result.stdout
+
+
+def test_run_requires_models_unless_interactive(tmp_path: Path):
+    result = runner.invoke(app, ["run", "--repo", str(tmp_path), "--dry-run"])
+
+    assert result.exit_code == 2
+    assert "--coder, --reviewer required" in result.stdout
+    assert "--interactive" in result.stdout
+
+
+def test_run_rejects_negative_model_cache_ttl(tmp_path: Path):
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--repo",
+            str(tmp_path),
+            "--coder",
+            "coder-model",
+            "--reviewer",
+            "reviewer-model",
+            "--model-cache-ttl-hours",
+            "-1",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "--model-cache-ttl-hours must be >= 0" in result.stdout
+
+
+def test_load_live_model_catalog_records_success(monkeypatch):
+    models = [ModelInfo("gpt-live", "GPT Live", "powerful")]
+    recorded: list[list[ModelInfo]] = []
+
+    monkeypatch.setattr(cli, "load_supported_models", lambda **_: [])
+    monkeypatch.setattr(cli, "discover_supported_models", lambda: models)
+    monkeypatch.setattr(cli, "record_supported_models", lambda value: recorded.append(value))
+
+    assert cli._load_live_model_catalog() == models
+    assert recorded == [models]
+
+
+def test_load_live_model_catalog_uses_fresh_cache(monkeypatch):
+    cached = [ModelInfo("cached-live", "Cached Live")]
+
+    monkeypatch.setattr(
+        cli,
+        "load_supported_models",
+        lambda **kwargs: cached if kwargs.get("max_age_s") == 86_400 else [],
+    )
+    monkeypatch.setattr(
+        cli,
+        "discover_supported_models",
+        lambda: (_ for _ in ()).throw(AssertionError("live discovery should not run")),
+    )
+
+    assert cli._load_live_model_catalog(cache_ttl_s=86_400) == cached
+
+
+def test_load_live_model_catalog_fails_closed(monkeypatch):
+    monkeypatch.setattr(cli, "discover_supported_models", lambda: [])
+
+    def fake_load_supported_models(**kwargs):
+        return [] if "max_age_s" in kwargs else [ModelInfo("cached")]
+
+    monkeypatch.setattr(cli, "load_supported_models", fake_load_supported_models)
+
+    with pytest.raises(Exit) as exc:
+        cli._load_live_model_catalog()
+
+    assert exc.value.exit_code == 2
+
+
+def test_pick_model_uses_sorted_live_catalog_and_marks_recent(monkeypatch):
+    models = [
+        ModelInfo("gpt-live", "GPT Live", "powerful"),
+        ModelInfo("claude-live", "Claude Live", "versatile"),
+    ]
+    monkeypatch.setattr(cli, "load_recent_models", lambda role: ["claude-live"])
+    seen: dict[str, object] = {}
+
+    def fake_select(title, options, *, default_index=0):
+        seen["title"] = title
+        seen["options"] = options
+        seen["default_index"] = default_index
+        return 0
+
+    monkeypatch.setattr(cli, "_select_from_menu", fake_select)
+
+    assert cli._pick_model("coder", default=None, label="coder", models=models) == "claude-live"
+    assert seen["options"] == [
+        "claude-live - Claude Live [versatile] [recent]",
+        "gpt-live - GPT Live [powerful]",
+        "(type a custom/BYOK id)",
+    ]
+
+
+def test_pick_model_allows_custom_byok_id(monkeypatch):
+    monkeypatch.setattr(cli, "load_recent_models", lambda role: [])
+    monkeypatch.setattr(cli, "_select_from_menu", lambda *_, **__: 1)
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *_, **__: "my-byok-model")
+
+    assert (
+        cli._pick_model(
+            "coder",
+            default=None,
+            label="coder",
+            models=[ModelInfo("gpt-live", "GPT Live", "powerful")],
+        )
+        == "my-byok-model"
+    )
+
+
+def test_pick_model_defaults_to_custom_when_default_not_in_catalog(monkeypatch):
+    monkeypatch.setattr(cli, "load_recent_models", lambda role: [])
+    seen: dict[str, int] = {}
+
+    def fake_select(*_, default_index=0, **__):
+        seen["default_index"] = default_index
+        return 0
+
+    monkeypatch.setattr(cli, "_select_from_menu", fake_select)
+
+    assert (
+        cli._pick_model(
+            "coder",
+            default="missing-default",
+            label="coder",
+            models=[ModelInfo("gpt-live", "GPT Live", "powerful")],
+        )
+        == "gpt-live"
+    )
+    assert seen["default_index"] == 1
+
+
+def test_select_from_menu_moves_with_arrow_keys(monkeypatch):
+    keys = iter(["\x1b[B", "\r"])
+    monkeypatch.setattr(cli.click, "getchar", lambda: next(keys))
+
+    assert cli._select_from_menu("pick", ["a", "b"], default_index=0) == 1
+
+
+def test_select_from_menu_can_cancel(monkeypatch):
+    monkeypatch.setattr(cli.click, "getchar", lambda: "q")
+
+    with pytest.raises(Exit) as exc:
+        cli._select_from_menu("pick", ["a", "b"], default_index=0)
+
+    assert exc.value.exit_code == 1
+
+
+def test_pick_model_reprompts_on_empty_custom_id(monkeypatch):
+    selections = iter([1, 1])
+    answers = iter(["", "custom-model"])
+    monkeypatch.setattr(cli, "load_recent_models", lambda role: [])
+    monkeypatch.setattr(cli, "_select_from_menu", lambda *_, **__: next(selections))
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *_, **__: next(answers))
+
+    assert (
+        cli._pick_model(
+            "coder",
+            default=None,
+            label="coder",
+            models=[ModelInfo("gpt-live", "GPT Live", "powerful")],
+        )
+        == "custom-model"
+    )
+
+
+def test_pick_effort_returns_selected_effort(monkeypatch):
+    monkeypatch.setattr(cli, "_select_from_menu", lambda *_, **__: 3)
+
+    assert cli._pick_effort("shared", default=None) == "high"
+
+
+def test_pick_effort_defaults_to_none(monkeypatch):
+    seen: dict[str, int] = {}
+
+    def fake_select(*_, default_index=0, **__):
+        seen["default_index"] = default_index
+        return 0
+
+    monkeypatch.setattr(cli, "_select_from_menu", fake_select)
+
+    assert cli._pick_effort("shared", default="medium") == ""
+    assert seen["default_index"] == 2
+
+
+def test_run_interactive_prompts_requires_tty(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+
+    with pytest.raises(Exit) as exc:
+        cli._run_interactive_prompts(
+            repo=tmp_path,
+            coder=None,
+            reviewer=None,
+            effort=None,
+            reviewer_effort=None,
+            coder_effort=None,
+            max_rounds=10,
+            idle_timeout=120,
+            round_timeout=10800,
+            model_cache_ttl_s=86_400,
+        )
+
+    assert exc.value.exit_code == 2
+
+
+def test_run_interactive_prompts_rejects_missing_repo(monkeypatch, tmp_path: Path):
+    missing = tmp_path / "missing"
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli, "_load_live_model_catalog", lambda **_: [ModelInfo("gpt-live")])
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *_, **__: str(missing))
+
+    with pytest.raises(Exit) as exc:
+        cli._run_interactive_prompts(
+            repo=tmp_path,
+            coder=None,
+            reviewer=None,
+            effort=None,
+            reviewer_effort=None,
+            coder_effort=None,
+            max_rounds=10,
+            idle_timeout=120,
+            round_timeout=10800,
+            model_cache_ttl_s=86_400,
+        )
+
+    assert exc.value.exit_code == 2
+
+
+def test_run_interactive_prompts_success(monkeypatch, tmp_path: Path):
+    answers = iter([str(tmp_path), "n", "y"])
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli, "_load_live_model_catalog", lambda **_: [ModelInfo("gpt-live")])
+    monkeypatch.setattr(cli, "_pick_model", lambda role, **kwargs: f"{role}-model")
+    monkeypatch.setattr(cli, "_pick_effort", lambda label, **kwargs: "medium")
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *_, **__: next(answers))
+    monkeypatch.setattr(cli.IntPrompt, "ask", lambda *_, default, **__: default)
+
+    result = cli._run_interactive_prompts(
+        repo=tmp_path,
+        coder=None,
+        reviewer=None,
+        effort=None,
+        reviewer_effort=None,
+        coder_effort=None,
+        max_rounds=10,
+        idle_timeout=120,
+        round_timeout=10800,
+        model_cache_ttl_s=86_400,
+    )
+
+    assert result["coder"] == "coder-model"
+    assert result["reviewer"] == "reviewer-model"
+    assert result["effort"] == "medium"
+
+
+def test_run_interactive_prompts_per_role_effort_and_cancel(monkeypatch, tmp_path: Path):
+    answers = iter([str(tmp_path), "y", "n"])
+    efforts = iter(["medium", "xhigh", "high"])
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli, "_load_live_model_catalog", lambda **_: [ModelInfo("gpt-live")])
+    monkeypatch.setattr(cli, "_pick_model", lambda role, **kwargs: f"{role}-model")
+    monkeypatch.setattr(cli, "_pick_effort", lambda label, **kwargs: next(efforts))
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *_, **__: next(answers))
+    monkeypatch.setattr(cli.IntPrompt, "ask", lambda *_, default, **__: default)
+
+    with pytest.raises(Exit) as exc:
+        cli._run_interactive_prompts(
+            repo=tmp_path,
+            coder=None,
+            reviewer=None,
+            effort=None,
+            reviewer_effort=None,
+            coder_effort=None,
+            max_rounds=10,
+            idle_timeout=120,
+            round_timeout=10800,
+            model_cache_ttl_s=86_400,
+        )
+
+    assert exc.value.exit_code == 1
 
 
 # ---- corrupted top-level scalars (review-0010) ---------------------------

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aidor.state import PhaseRecord, RestartRecord, State
+from aidor.state import STATE_REPLACE_ATTEMPTS, PhaseRecord, RestartRecord, State
 
 
 def test_round_trip(tmp_path: Path):
@@ -48,6 +48,45 @@ def test_save_is_atomic(tmp_path: Path):
         p.name.startswith("state.") and p.suffix == ".json" and p != path
         for p in tmp_path.iterdir()
     )
+
+
+def test_save_retries_transient_permission_error(monkeypatch, tmp_path: Path):
+    attempts = {"count": 0}
+    real_replace = __import__("os").replace
+
+    def flaky_replace(src: str, dst: str | Path) -> None:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise PermissionError("temporarily locked")
+        real_replace(src, dst)
+
+    monkeypatch.setattr("aidor.state.os.replace", flaky_replace)
+    monkeypatch.setattr("aidor.state.time.sleep", lambda _seconds: None)
+
+    path = tmp_path / "state.json"
+    State(status="running").save(path)
+
+    assert attempts["count"] == 3
+    assert State.load(path).status == "running"
+
+
+def test_save_raises_after_replace_retries_and_removes_temp(monkeypatch, tmp_path: Path):
+    attempts = {"count": 0}
+
+    def locked_replace(_src: str, _dst: str | Path) -> None:
+        attempts["count"] += 1
+        raise PermissionError("locked")
+
+    monkeypatch.setattr("aidor.state.os.replace", locked_replace)
+    monkeypatch.setattr("aidor.state.time.sleep", lambda _seconds: None)
+
+    import pytest
+
+    with pytest.raises(PermissionError, match="locked"):
+        State(status="running").save(tmp_path / "state.json")
+
+    assert attempts["count"] == STATE_REPLACE_ATTEMPTS
+    assert not list(tmp_path.glob("state.*.json"))
 
 
 def test_load_rejects_non_object_top_level(tmp_path: Path):

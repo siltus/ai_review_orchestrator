@@ -9,12 +9,14 @@ from rich.console import Console
 
 from aidor.state import PhaseRecord, RoundRecord, State
 from aidor.summary import (
+    FailedMcpTool,
     _fmt_dur,
     _fmt_int,
     _fmt_prod,
     _phase,
     _sum_cost,
     _sum_tokens,
+    collect_failed_mcp_tools,
     print_summary,
     render_table,
     write_summary_md,
@@ -73,6 +75,24 @@ def test_print_summary_writes_to_console():
     assert "converged" in out
 
 
+def test_print_summary_mentions_failed_mcp_tools(tmp_path: Path):
+    state = _state_with_one_round()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "failed_mcp_tools.jsonl").write_text(
+        '{"tool":"example-mcp-server-create_pr","reason":"blocked"}\n',
+        encoding="utf-8",
+    )
+    buf = StringIO()
+    console = Console(file=buf, width=200, color_system=None)
+
+    print_summary(state, console, aidor_dir=tmp_path)
+
+    out = buf.getvalue()
+    assert "Denied MCP tools" in out
+    assert "example-mcp-server-create_pr" in out
+
+
 def test_write_summary_md_renders_markdown_table(tmp_path: Path):
     state = _state_with_one_round()
     out = tmp_path / "summary.md"
@@ -82,6 +102,43 @@ def test_write_summary_md_renders_markdown_table(tmp_path: Path):
     assert "| # | reviewer | coder |" in body
     assert "converged" in body
     assert "✓" in body  # production-ready glyph
+
+
+def test_summary_md_mentions_failed_mcp_tools_and_whitelist_guidance(tmp_path: Path):
+    state = _state_with_one_round()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "failed_mcp_tools.jsonl").write_text(
+        '{"tool":"example-mcp-server-create_pr","reason":"not allowlisted"}\n'
+        '{"tool":"example-mcp-server-create_pr","reason":"still not allowlisted"}\n'
+        '{"tool":"other-mcp-tool","reason":"blocked"}\n',
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "summary.md"
+    write_summary_md(state, out)
+    body = out.read_text(encoding="utf-8")
+
+    assert "## Denied MCP tools" in body
+    assert "`example-mcp-server-create_pr` | 2" in body
+    assert "tools:" in body
+    assert "mcp_tools:" in body
+    assert "  - example-mcp-server-create_pr" in body
+
+
+def test_collect_failed_mcp_tools_ignores_malformed_lines(tmp_path: Path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "failed_mcp_tools.jsonl").write_text(
+        "not-json\n"
+        '{"tool":"","reason":"empty"}\n'
+        '{"tool":"example-mcp-find_symbol","reason":"outside"}\n',
+        encoding="utf-8",
+    )
+
+    assert collect_failed_mcp_tools(tmp_path) == [
+        FailedMcpTool(tool="example-mcp-find_symbol", count=1, reason="outside")
+    ]
 
 
 def test_fmt_dur_formats_h_m_s():

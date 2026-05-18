@@ -36,7 +36,8 @@ Regardless of the instructions per repo, the orchestrator must ensure both revie
 * All bugfixes must be covered by a new test, no exceptions.
 * Linters / code styles are a must. The coder is not allowed to exclude any rule without explicit consent from the human. We can have a list of allowed exceptions per linter and scenarios that the orchestrator can provide to the coder without human intervention.
 * Everything must be documented in Architecture, Readme and Getting started documents. these are integral part of any repo.
-* all the above rules must be saved as permanent instructions, using AGENTS.md or other mechanism.
+* all the above rules must be saved as aidor-owned runtime instructions, copied
+  into the target repo only while orchestration is active.
 
 If any of these are violated, consult the human how to proceed, we will update the source together to have a deterministic rule set on how to tackle each issue.
 
@@ -87,3 +88,33 @@ Also, if one of the LLMs will stop to ask a question, the orchestrator should ei
 # Guard
 
 The orchestrator must validate none of the LLM agents are doing ANYTHING outside the repo bounadries. They can run build / test tools that are installed on the system but in no circumstances they are allowed to PUSH changes to remote git, or change anything on the computer (like installing a new tool). When in doubt, ping the human!!!
+
+# 2026-05 hardening requirements
+
+* The coder must not change aidor policy or orchestration files such as
+  `.aidor/allowed_exceptions.yml`, `.aidor/tool_allowlist.yml`,
+  `.aidor/shell_allowlist.yml`, `.github/hooks/aidor.json`, or generated
+  `.github/agents/aidor-*.md`. The reviewer may change them only after careful
+  consideration and should ask the human when in doubt.
+* Both agents must ignore git submodule code issues. Submodules are external
+  pinned dependencies; only parent-repo integration, pinning, and gate/exclusion
+  wiring are in scope.
+* Both agents must scan the available tool list for MCP servers and use
+  configured MCPs when they are the correct source. External MCPs are optional
+  per environment, so aidor must not hard-code a server such as Serena in
+  Python logic or tests.
+* `aidor run --interactive` must ask for major settings before launch using the
+  same defaults as the CLI. Model and reasoning-effort choices must be
+  selectable from lists; model ids come from Copilot's current catalog, not a
+  hard-coded list.
+* Model catalog discovery should be cached for at least one day by default and
+  be overridable from the CLI, including a way to force refresh.
+* If saving `.aidor/state.json` fails after retrying transient filesystem
+  errors, the run must terminate with an error before launching another agent
+  phase. Continuing on stale state is forbidden.
+* `.aidor/ABORT` is a one-shot run-abort marker. A fresh run must clear a stale
+  marker before starting the first agent phase.
+* aidor's orchestration `AGENTS.md` is a runtime artifact, not this repository's
+  interactive agent instructions. Store it as a renamed packaged resource,
+  copy it to the target repo as `AGENTS.md` only for the duration of a run, and
+  restore any pre-existing target `AGENTS.md` afterward.

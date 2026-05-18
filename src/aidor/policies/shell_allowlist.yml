@@ -144,6 +144,13 @@ rules:
   # destructive forms. (regression: review-0002)
   - { exe: git, args_regex: '^stash(\s+(list|show|push|save|pop|apply|branch|create|store)(\s.*)?)?$' }
   - { exe: git, args_regex: '^worktree\s+(add|list|lock|unlock|move|prune|repair)(\s.*)?$' }
+  # `git submodule status` (read-only) lets agents enumerate submodules so
+  # they can exclude them from reviews / lint / coverage gates per the
+  # AGENTS.md "ignore submodules" rule. Other `git submodule` subcommands
+  # (init/update/add/deinit/sync/foreach) are intentionally NOT in the
+  # allowlist: they mutate submodule state and can pull arbitrary remote
+  # code into the parent checkout.
+  - { exe: git, args_regex: '^submodule(\s+status(\s+--(recursive|cached|quiet))*)?$' }
 
   # ---- Copilot CLI introspection ---------------------------------------
   - { exe: copilot, args_regex: '^(--version|--help|help|list-sessions|view-session|status)( .*)?$' }

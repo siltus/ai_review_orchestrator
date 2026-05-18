@@ -41,6 +41,11 @@ log = logging.getLogger(__name__)
 
 CODER_AGENT = "aidor-coder"
 REVIEWER_AGENT = "aidor-reviewer"
+STATE_PERSISTENCE_EXIT_CODE = 4
+
+
+class StatePersistenceError(RuntimeError):
+    """Raised when `.aidor/state.json` cannot be persisted."""
 
 
 # -- Shared helpers ------------------------------------------------------------
@@ -179,6 +184,23 @@ class Orchestrator:
         actions = bootstrap(self.config)
         for a in actions:
             log.info("bootstrap: %s", a)
+        try:
+            self._clear_abort_marker()
+        except StatePersistenceError as exc:
+            self._print_state_persistence_error(exc)
+            return STATE_PERSISTENCE_EXIT_CODE
+
+        # Record this run's models in the recent-models cache so a
+        # future `aidor run --interactive` can surface them as picker
+        # choices without the operator having to retype them. Best-effort:
+        # cache failures must never block the run (see model_history).
+        try:
+            from aidor.model_history import record_model_use
+
+            record_model_use("coder", self.config.coder_model)
+            record_model_use("reviewer", self.config.reviewer_model)
+        except Exception:  # pragma: no cover - defensive
+            log.exception("failed to record models in recent-models cache")
 
         # Advisory pre-run warnings (platform mismatch, very large repos).
         # Non-blocking — operator owns budget and platform selection.
@@ -211,7 +233,11 @@ class Orchestrator:
             self.state = State(started_at=_utcnow(), status="running")
 
         self.state.status = "running"
-        self._save_state()
+        try:
+            self._save_state()
+        except StatePersistenceError as exc:
+            self._print_state_persistence_error(exc)
+            return STATE_PERSISTENCE_EXIT_CODE
 
         # Signal handlers — write state and break the loop.
         self._install_signals()
@@ -222,7 +248,12 @@ class Orchestrator:
         exit_code = 1
         try:
             with WakeLock(enabled=self.config.keep_awake):
-                exit_code = await self._main_loop()
+                try:
+                    exit_code = await self._main_loop()
+                except StatePersistenceError as exc:
+                    self.state.status = "failed"
+                    self._print_state_persistence_error(exc)
+                    exit_code = STATE_PERSISTENCE_EXIT_CODE
         finally:
             self._stop.set()
             if self._human_watcher_task:
@@ -232,7 +263,7 @@ class Orchestrator:
                 except (asyncio.CancelledError, Exception):
                     pass
             self.state.ended_at = _utcnow()
-            self._save_state()
+            self._save_state_best_effort()
             try:
                 write_summary_md(self.state, self.config.summary_path)
             except Exception:  # pragma: no cover - defensive
@@ -249,7 +280,7 @@ class Orchestrator:
             except Exception:  # pragma: no cover - defensive
                 log.exception("teardown failed")
             self.console.print()
-            print_summary(self.state, self.console)
+            print_summary(self.state, self.console, aidor_dir=self.config.aidor_dir)
             self.console.print(f"[dim]summary: {self.config.summary_path}[/dim]")
         return exit_code
 
@@ -707,8 +738,33 @@ class Orchestrator:
     def _save_state(self) -> None:
         try:
             self.state.save(self.config.state_path)
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:
             log.exception("failed to save state.json")
+            raise StatePersistenceError(
+                f"could not persist {self.config.state_path}: {exc}"
+            ) from exc
+
+    def _save_state_best_effort(self) -> None:
+        try:
+            self._save_state()
+        except StatePersistenceError:
+            pass
+
+    def _print_state_persistence_error(self, exc: StatePersistenceError) -> None:
+        self.console.print(f"[red]fatal: {exc}[/red]")
+
+    def _clear_abort_marker(self) -> None:
+        marker = self.config.aidor_dir / "ABORT"
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            log.exception("failed to clear stale ABORT marker")
+            raise StatePersistenceError(
+                f"could not clear stale abort marker {marker}: {exc}"
+            ) from exc
+        log.info("cleared stale ABORT marker %s", marker)
 
     def _note(self, msg: str) -> None:
         self.state.notes.append(f"{_utcnow()} {msg}")
