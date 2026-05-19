@@ -1,4 +1,4 @@
-# aidor — AI Review Orchestrator · Plan
+# aidor — AI Iterative Development Orchestrator & Reviewer · Plan
 
 > Living design doc. Keep in sync with `reqs.md`. Update as decisions are made.
 

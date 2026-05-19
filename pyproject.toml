@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "aidor"
 version = "1.2.0"
-description = "AI Review Orchestrator — drives a coder LLM and a reviewer LLM through GitHub Copilot CLI in an automated review/fix loop."
+description = "AI Iterative Development Orchestrator & Reviewer — drives a coder LLM and a reviewer LLM through GitHub Copilot CLI in an automated review/fix loop."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

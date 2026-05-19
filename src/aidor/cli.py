@@ -42,7 +42,7 @@ from aidor.summary import print_summary, write_summary_md
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
-    help="AI Review Orchestrator — drive Copilot CLI through review↔fix cycles.",
+    help="AI Iterative Development Orchestrator & Reviewer — drive Copilot CLI through review↔fix cycles.",
 )
 
 console = Console()

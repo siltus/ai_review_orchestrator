@@ -1,6 +1,6 @@
 # Getting started with `aidor`
 
-> AI Review Orchestrator: drives Copilot CLI through automated review↔fix
+> AI Iterative Development Orchestrator & Reviewer: drives Copilot CLI through automated review↔fix
 > rounds until the reviewer signs the repo off as production-ready.
 
 ## Prerequisites

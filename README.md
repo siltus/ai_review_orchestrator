@@ -1,4 +1,4 @@
-# aidor — AI Review Orchestrator
+# aidor — AI Iterative Development Orchestrator & Reviewer
 
 > ## ⚠️ DISCLAIMER — READ BEFORE USE
 >

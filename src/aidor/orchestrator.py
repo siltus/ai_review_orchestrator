@@ -180,7 +180,7 @@ class Orchestrator:
     # ---- Public entry point ------------------------------------------------
 
     async def run(self) -> int:
-        self.console.rule("[bold]aidor[/bold] — AI Review Orchestrator")
+        self.console.rule("[bold]aidor[/bold] — AI Iterative Development Orchestrator & Reviewer")
         actions = bootstrap(self.config)
         for a in actions:
             log.info("bootstrap: %s", a)
