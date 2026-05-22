@@ -716,3 +716,86 @@ def test_is_dev_tool_strips_node_at_version():
     assert is_dev_tool("vitest@1.6.0", ecosystem="node")
     # Scoped names must keep the leading @scope.
     assert is_dev_tool("@playwright/test", ecosystem="node")
+
+
+# ---- Tool-name slash/hyphen normalization (MCP server name mismatch) ------
+
+
+def test_normalize_tool_name_slash_to_hyphen():
+    """First slash is replaced; subsequent slashes are left alone."""
+    assert hr._normalize_tool_name("serena/get_symbols_overview") == "serena-get_symbols_overview"
+    assert hr._normalize_tool_name("github-mcp-server/web_search") == (
+        "github-mcp-server-web_search"
+    )
+    # No slash → identity.
+    assert hr._normalize_tool_name("view") == "view"
+    assert hr._normalize_tool_name("") == ""
+    # Only first slash replaced.
+    assert hr._normalize_tool_name("a/b/c") == "a-b/c"
+
+
+def test_permission_request_allows_slash_form_serena(tmp_path: Path):
+    """permissionRequest with slash-form MCP tool name must be allowed
+    when the hyphen form is in the bundled allowlist."""
+    for slash_tool in (
+        "serena/get_symbols_overview",
+        "serena/find_symbol",
+        "serena/initial_instructions",
+        "serena/onboarding",
+        "serena/check_onboarding_performed",
+        "serena/read_memory",
+    ):
+        payload = {"cwd": str(tmp_path), "toolName": slash_tool}
+        decision = hr._on_permission_request("permissionRequest", payload)
+        assert decision is None, f"{slash_tool} should be allowed but was denied"
+
+
+def test_pre_tool_use_allows_slash_form_serena(tmp_path: Path):
+    """preToolUse with slash-form MCP tool name must also be allowed."""
+    payload = {
+        "cwd": str(tmp_path),
+        "toolName": "serena/get_symbols_overview",
+        "toolArgs": {"relative_path": "src/foo.py"},
+    }
+    decision = hr._on_pre_tool_use("preToolUse", payload)
+    assert decision is None
+
+
+def test_pre_tool_use_slash_form_path_containment_enforced(tmp_path: Path):
+    """Slash-form Serena path-scoped tool must still enforce path
+    containment (the bug is about false denials at allowlist level,
+    not about weakening downstream guards)."""
+    payload = {
+        "cwd": str(tmp_path),
+        "toolName": "serena/get_symbols_overview",
+        "toolArgs": {"relative_path": "<ext>/outside.py"},
+    }
+    decision = hr._on_pre_tool_use("preToolUse", payload)
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+
+
+def test_pre_tool_use_slash_form_memory_scope_enforced(tmp_path: Path):
+    """Slash-form Serena memory tool must still enforce memory-scope
+    restrictions (no global/ access)."""
+    payload = {
+        "cwd": str(tmp_path),
+        "toolName": "serena/read_memory",
+        "toolArgs": {"memory_name": "global/secrets"},
+    }
+    decision = hr._on_pre_tool_use("preToolUse", payload)
+    assert decision is not None
+    assert decision["permissionDecision"] == "deny"
+
+
+def test_policy_contains_both_slash_and_hyphen_aliases(tmp_path: Path):
+    """Both forms are present in the loaded policy so either can match."""
+    policy = hr._load_tool_policy(tmp_path)
+    # The bundled YAML has `github-mcp-server/web_search` (slash form).
+    assert "github-mcp-server/web_search" in policy.tools
+    # The alias expansion adds the hyphen-normalised form.
+    assert "github-mcp-server-web_search" in policy.tools
+    # The bundled YAML has `serena-get_symbols_overview` (hyphen form).
+    assert "serena-get_symbols_overview" in policy.tools
+    # Both are identical after normalisation, so only one alias exists.
+    assert "serena-get_symbols_overview" in policy.tools

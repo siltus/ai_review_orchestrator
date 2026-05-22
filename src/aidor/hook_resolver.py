@@ -36,6 +36,19 @@ from typing import Any, cast
 POLL_INTERVAL_S = 0.25
 
 
+def _normalize_tool_name(name: str) -> str:
+    """Canonicalise MCP-style tool names so ``server/tool`` and
+    ``server-tool`` match the same allowlist entry.
+
+    Copilot CLI uses hyphens in ``preToolUse`` payloads but slashes in
+    ``permissionRequest`` payloads for the same MCP tool.  We normalise
+    to hyphen form (which is what the bundled ``tool_allowlist.yml``
+    uses) by replacing only the **first** ``/`` to avoid mangling tool
+    names that legitimately contain deeper path segments.
+    """
+    return name.replace("/", "-", 1)
+
+
 def _as_str_dict(value: Any) -> dict[str, Any]:
     """Narrow an arbitrary value (typically from ``json.loads`` or
     ``yaml.safe_load``) to a typed ``dict[str, Any]``.
@@ -90,7 +103,8 @@ def _passthrough(event: str, payload: dict[str, Any]) -> None:
 
 def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     """preToolUse: intercept ask_user + enforce path containment on writes/edits."""
-    tool = _get_field(payload, "toolName", "tool_name", default="")
+    raw_tool = _get_field(payload, "toolName", "tool_name", default="")
+    tool = _normalize_tool_name(raw_tool)
     raw_args = _get_field(payload, "toolArgs", "tool_input", default={})
     if isinstance(raw_args, dict):
         args: dict[str, Any] = cast(dict[str, Any], raw_args)
@@ -120,7 +134,7 @@ def _on_pre_tool_use(event: str, payload: dict[str, Any]) -> dict[str, Any] | No
         return _handle_ask_user(payload, args)
 
     def deny(decision: dict[str, Any]) -> dict[str, Any]:
-        _record_failed_mcp_tool(event, payload, tool, decision, policy)
+        _record_failed_mcp_tool(event, payload, raw_tool, decision, policy)
         return decision
 
     # Tool allowlist: deny-by-default for every Copilot tool that is not
@@ -223,12 +237,13 @@ def _on_permission_request(event: str, payload: dict[str, Any]) -> dict[str, Any
     here ensures non-allowlisted tools are denied at this layer too,
     not just in `preToolUse`.
     """
-    tool = _get_field(payload, "toolName", "tool_name", default="")
+    raw_tool = _get_field(payload, "toolName", "tool_name", default="")
+    tool = _normalize_tool_name(raw_tool)
     policy = _load_tool_policy(_repo_root(payload))
     decision = _check_tool_allowlist(payload, tool, policy=policy)
     if decision is not None:
-        _record_failed_mcp_tool(event, payload, tool, decision, policy)
-        _log_breadcrumb(payload, f"permissionRequest deny tool={tool!r} (not in allowlist)")
+        _record_failed_mcp_tool(event, payload, raw_tool, decision, policy)
+        _log_breadcrumb(payload, f"permissionRequest deny tool={raw_tool!r} (not in allowlist)")
         return decision
     _log_breadcrumb(
         payload, f"permissionRequest tool={tool!r} (allowlisted; preToolUse is primary)"
@@ -552,19 +567,29 @@ def _load_tool_policy(repo: Path) -> ToolPolicy:
         mcp_tools.update(_clean_str_items(data.get("mcp_tools")))
         _extend_unique(mcp_tool_patterns, _clean_str_items(data.get("mcp_tool_patterns")))
 
+    # Expand every tool-name set so both slash and hyphen forms are
+    # recognised.  Copilot CLI sends hyphens in preToolUse but slashes
+    # in permissionRequest for the same MCP tool; adding the normalised
+    # alias to the policy sets means the incoming name (also normalised
+    # at the handler edge) always matches regardless of which form
+    # Copilot chose. We keep the original entry too so allowlist YAMLs
+    # that already use one form or the other keep working.
+    def _with_aliases(s: set[str]) -> frozenset[str]:
+        return frozenset(s | {_normalize_tool_name(n) for n in s})
+
     return ToolPolicy(
-        tools=frozenset(tools),
-        write_tools=frozenset(write_tools),
-        path_scoped_tools=frozenset(path_scoped_tools),
+        tools=_with_aliases(tools),
+        write_tools=_with_aliases(write_tools),
+        path_scoped_tools=_with_aliases(path_scoped_tools),
         path_arg_keys=tuple(path_arg_keys),
         deny_path_prefixes=tuple(deny_path_prefixes),
-        memory_scoped_tools=frozenset(memory_scoped_tools),
+        memory_scoped_tools=_with_aliases(memory_scoped_tools),
         memory_arg_keys=tuple(memory_arg_keys),
         memory_forbidden_values=frozenset(memory_forbidden_values),
         memory_forbidden_prefixes=tuple(memory_forbidden_prefixes),
         memory_deny_absolute=memory_deny_absolute,
         memory_deny_parent_segments=memory_deny_parent_segments,
-        mcp_tools=frozenset(mcp_tools),
+        mcp_tools=_with_aliases(mcp_tools),
         mcp_tool_patterns=tuple(mcp_tool_patterns),
     )
 
