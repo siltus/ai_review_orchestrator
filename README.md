@@ -55,9 +55,79 @@ Copilot CLI in an automated review↔fix loop. It is a thin supervisor around
 
 ## Install
 
+Install a specific tagged release straight from GitHub with `pip` — no clone
+required:
+
+```pwsh
+pip install "git+https://github.com/siltus/ai_review_orchestrator.git@v1.2.1"
 ```
+
+Replace `v1.2.1` with whichever tag you want; list available tags with
+`git ls-remote --tags https://github.com/siltus/ai_review_orchestrator.git`.
+You can also pin to a commit SHA or follow a branch (less stable):
+
+```pwsh
+# pin to a specific commit
+pip install "git+https://github.com/siltus/ai_review_orchestrator.git@<sha>"
+
+# track the default branch
+pip install "git+https://github.com/siltus/ai_review_orchestrator.git@master"
+```
+
+For local development against a clone (editable install with dev extras), see
+[GETTING_STARTED.md](GETTING_STARTED.md); the short form is:
+
+```pwsh
 pip install -e ".[dev]"
 ```
+
+### Windows: `WinError 2` / `.deleteme` install failures
+
+If `pip install` against a system-wide Python (e.g. `C:\Python311\`) fails with:
+
+```
+ERROR: Could not install packages due to an OSError: [WinError 2]
+The system cannot find the file specified:
+'C:\Python311\Scripts\markdown-it.exe' -> 'C:\Python311\Scripts\markdown-it.exe.deleteme'
+```
+
+…the `Scripts\` directory isn't writable by your user. pip installs console
+scripts by renaming the existing `.exe` to `.exe.deleteme` and dropping the new
+one in place; without write permission on `Scripts\`, the rename fails. Pick
+**one** of the following:
+
+**1. Per-user virtual environment (simplest)** — works with stock `pip` and
+needs no bootstrap:
+
+```pwsh
+python -m venv $env:USERPROFILE\.venvs\aidor
+& "$env:USERPROFILE\.venvs\aidor\Scripts\Activate.ps1"
+pip install "git+https://github.com/siltus/ai_review_orchestrator.git@v1.2.1"
+aidor --version
+```
+
+Re-activate the venv (`& "$env:USERPROFILE\.venvs\aidor\Scripts\Activate.ps1"`)
+in each new shell where you want to run `aidor`.
+
+**2. `pipx` (cleaner if you install many CLI tools)** — installs aidor into its
+own isolated venv under `%USERPROFILE%\pipx\` and shims the `aidor` command
+into a user-writable directory. Needs a one-time pipx bootstrap first:
+
+```pwsh
+python -m pip install --user pipx
+python -m pipx --version     # verify; should print a version number
+python -m pipx ensurepath
+python -m pipx install "git+https://github.com/siltus/ai_review_orchestrator.git@v1.2.1"
+```
+
+Use `python -m pipx …` (not bare `pipx …`) until you open a fresh shell —
+`ensurepath` only updates `PATH` for **new** shells. After restarting
+PowerShell, `pipx` and `aidor` are on `PATH` directly.
+
+**3. Elevated PowerShell** — only if you really want the install in the system
+Python. Right-click PowerShell → *Run as administrator*, then re-run the
+`pip install` command. This gives pip permission to overwrite
+`C:\Python311\Scripts\*.exe`.
 
 ## Quick start
 
