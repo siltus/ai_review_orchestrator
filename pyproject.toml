@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aidor"
-version = "1.2.1"
+version = "1.2.2"
 description = "AI Iterative Development Orchestrator & Reviewer — drives a coder LLM and a reviewer LLM through GitHub Copilot CLI in an automated review/fix loop."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -35,11 +35,6 @@ aidor-hook = "aidor.hook_resolver:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aidor"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/aidor/agent_templates" = "aidor/agent_templates"
-"src/aidor/resources" = "aidor/resources"
-"src/aidor/policies" = "aidor/policies"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

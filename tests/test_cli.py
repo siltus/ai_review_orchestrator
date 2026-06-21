@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from click.exceptions import Exit
+from typer import Exit
 from typer.testing import CliRunner
 
 import aidor.cli as cli

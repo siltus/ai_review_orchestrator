@@ -59,10 +59,10 @@ Install a specific tagged release straight from GitHub with `pip` — no clone
 required:
 
 ```pwsh
-pip install "git+https://github.com/siltus/ai_review_orchestrator.git@v1.2.1"
+pip install "git+https://github.com/siltus/ai_review_orchestrator.git@v1.2.2"
 ```
 
-Replace `v1.2.1` with whichever tag you want; list available tags with
+Replace `v1.2.2` with whichever tag you want; list available tags with
 `git ls-remote --tags https://github.com/siltus/ai_review_orchestrator.git`.
 You can also pin to a commit SHA or follow a branch (less stable):
 
@@ -102,7 +102,7 @@ needs no bootstrap:
 ```pwsh
 python -m venv $env:USERPROFILE\.venvs\aidor
 & "$env:USERPROFILE\.venvs\aidor\Scripts\Activate.ps1"
-pip install "git+https://github.com/siltus/ai_review_orchestrator.git@v1.2.1"
+pip install "git+https://github.com/siltus/ai_review_orchestrator.git@v1.2.2"
 aidor --version
 ```
 
@@ -117,7 +117,7 @@ into a user-writable directory. Needs a one-time pipx bootstrap first:
 python -m pip install --user pipx
 python -m pipx --version     # verify; should print a version number
 python -m pipx ensurepath
-python -m pipx install "git+https://github.com/siltus/ai_review_orchestrator.git@v1.2.1"
+python -m pipx install "git+https://github.com/siltus/ai_review_orchestrator.git@v1.2.2"
 ```
 
 Use `python -m pipx …` (not bare `pipx …`) until you open a fresh shell —
